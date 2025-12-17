@@ -7,28 +7,28 @@ pipeline {
     }
 
     triggers {
-        // Déclenche le pipeline à chaque push sur dev (si webhook GitHub non configuré)
+        // Déclenche le pipeline à chaque push sur dev (ou utilise webhook GitHub)
         pollSCM('H/5 * * * *')
     }
 
     environment {
         APP_NAME = "mon_app"
-        DOCKER_IMAGE = "mon_app_${env.BUILD_NUMBER}"
+        DOCKER_IMAGE = "mon_app_%BUILD_NUMBER%"
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo "Clonage du repo Git"
+                echo "Clonage du repository Git"
                 checkout scm
             }
         }
 
         stage('Setup') {
             steps {
-                echo "Installation des dépendances"
-                bat 'npm install' // pour Windows
+                echo "Installation des dépendances npm"
+                bat 'npm install'
             }
         }
 
