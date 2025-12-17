@@ -1,126 +1,111 @@
 pipeline {
     agent any
 
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
+    triggers {
+        // Pipeline déclenché sur push dev (polling ou webhook GitHub)
+        pollSCM('H/5 * * * *')
+    }
+
     environment {
-        IMAGE_NAME = "monapp-dev:latest"
-        CONTAINER_NAME = "monapp-dev-container"
+        APP_NAME = "mon_app"
+        DOCKER_IMAGE = "mon_app:${BUILD_NUMBER}"
+        CONTAINER_NAME = "mon_app_${BUILD_NUMBER}"
     }
 
     stages {
-        stage('Start') {
-            steps {
-                echo 'Début du pipeline'
-            }
-        }
-        
+
         stage('Checkout') {
             steps {
+                echo "📥 Checkout du repository Git"
                 checkout scm
-                echo 'Code récupéré depuis GitHub'
             }
         }
 
         stage('Setup') {
             steps {
+                echo "⚙️ Installation des dépendances"
                 bat 'npm install'
-                echo 'Dépendances installées'
             }
         }
 
         stage('Build') {
             steps {
-                echo 'Pas de compilation nécessaire - skipped (normal pour app Express)'
+                echo "🏗️ Build de l’application"
+                bat 'npm run build'
             }
         }
 
         stage('Docker Build & Run') {
             parallel {
+
                 stage('Docker Build') {
                     steps {
-                        script {
-                            echo 'Construction de l\'image Docker'
-                            bat "docker build -t %IMAGE_NAME% ."
-                            echo 'Image Docker construite avec succès'
-                        }
+                        echo "🐳 Construction de l’image Docker"
+                        bat "docker build -t %DOCKER_IMAGE% ."
                     }
                 }
+
                 stage('Docker Run') {
                     steps {
-                        script {
-                            bat '''
-                            docker rm -f %CONTAINER_NAME% || exit 0
-                            docker run -d -p 3001:3000 --name %CONTAINER_NAME% %IMAGE_NAME%
-                            '''
-                            sleep 30
-                            echo 'Container lancé sur port 3001'
-                        }
+                        echo "🚀 Démarrage du container Docker"
+                        bat """
+                        docker rm -f %CONTAINER_NAME% 2>nul
+                        docker run -d -p 3000:3000 --name %CONTAINER_NAME% %DOCKER_IMAGE%
+                        """
                     }
                 }
             }
         }
 
-        stage('Service Test') {
+        stage('Smoke Test') {
             steps {
-                script {
-                    echo 'Service Artifacts - Tests en cours'
-                    
-                    // Smoke Test
-                    bat '''
-                    powershell -Command "
-                    try {
-                        $status = (Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing).StatusCode
-                        if ($status -ne 200) { exit 1 }
-                    } catch { exit 1 }"
-                    '''
-                    echo 'Smoke Test PASSED'
-                    
-                    // Tests parallèles pour Node 18 et 20
-                    parallel(
-                        'Runtime Node 18': {
-                            bat 'node --version'
-                            echo 'Build et tests avec Node 18 terminé'
-                        },
-                        'Runtime Node 20': {
-                            bat 'echo Node 20 OK'
-                            echo 'Simulation build et tests avec Node 20 terminé'
-                        }
-                    )
+                echo "🧪 Smoke Test de l’application"
+
+                powershell '''
+                try {
+                    $response = Invoke-WebRequest -Uri "http://localhost:3000" -UseBasicParsing -TimeoutSec 5
+                    Write-Host "Smoke Test OK - Status Code:" $response.StatusCode
                 }
+                catch {
+                    Write-Host "Smoke Test FAILED"
+                    exit 1
+                }
+                '''
             }
         }
 
         stage('Archive Artifacts') {
             steps {
-                archiveArtifacts artifacts: '**/*.log', allowEmptyArchive: true
-                echo 'Artefacts archivés'
+                echo "📦 Archivage des artefacts"
+                archiveArtifacts artifacts: '**/logs/**, **/build/**', fingerprint: true
             }
         }
 
         stage('Cleanup') {
             steps {
-                bat 'docker stop %CONTAINER_NAME% || exit 0'
-                bat 'docker rm %CONTAINER_NAME% || exit 0'
-                echo 'Cleanup terminé'
-            }
-        }
-        
-        stage('End') {
-            steps {
-                echo 'Fin du pipeline'
+                echo "🧹 Nettoyage Docker"
+                bat """
+                docker stop %CONTAINER_NAME% 2>nul
+                docker rm %CONTAINER_NAME% 2>nul
+                """
             }
         }
     }
 
     post {
-        always {
-            echo 'Delete workspace when build is done'
-            cleanWs()
-        }
         success {
-            echo 'PIPELINE 2 - DEV PUSH : PASSED avec parallélisation ✅'
+            echo "✅ Pipeline exécuté avec succès"
         }
         failure {
-            echo 'PIPELINE 2 - DEV PUSH : FAILED ❌'
+            echo "❌ Pipeline échoué"
+        }
+        always {
+            echo "📄 Fin du pipeline"
         }
     }
 }
