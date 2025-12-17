@@ -7,6 +7,12 @@ pipeline {
     }
 
     stages {
+        stage('Start') {
+            steps {
+                echo 'Début du pipeline'
+            }
+        }
+        
         stage('Checkout') {
             steps {
                 checkout scm
@@ -27,51 +33,58 @@ pipeline {
             }
         }
 
-        stage('Docker Build') {
-            steps {
-                bat 'docker build -t %IMAGE_NAME% .'
-                echo 'Image Docker construite avec succès'
-            }
-        }
-
-        stage('Docker Run') {
-            steps {
-                bat '''
-                docker rm -f %CONTAINER_NAME% || exit 0
-                docker run -d -p 3001:3000 --name %CONTAINER_NAME% %IMAGE_NAME%
-                '''
-                sleep 30
-                echo 'Container lancé sur port 3001'
-            }
-        }
-
-        stage('Smoke Test') {
-            steps {
-                bat '''
-                powershell -Command "
-                try {
-                    $status = (Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing).StatusCode
-                    if ($status -ne 200) { exit 1 }
-                } catch { exit 1 }"
-                '''
-                echo 'Smoke Test PASSED'
-            }
-        }
-
-        // PARALLÉLISATION EXIGÉE
-        stage('Parallélisation runtime') {
+        stage('Docker Build & Run') {
             parallel {
-                stage('Runtime Node 18') {
+                stage('Docker Build') {
                     steps {
-                        bat 'node --version'
-                        echo 'Build et tests avec Node 18 terminé'
+                        script {
+                            echo 'Construction de l\'image Docker'
+                            bat "docker build -t %IMAGE_NAME% ."
+                            echo 'Image Docker construite avec succès'
+                        }
                     }
                 }
-                stage('Runtime Node 20') {
+                stage('Docker Run') {
                     steps {
-                        echo 'Simulation build et tests avec Node 20 terminé'
-                        bat 'echo Node 20 OK'
+                        script {
+                            bat '''
+                            docker rm -f %CONTAINER_NAME% || exit 0
+                            docker run -d -p 3001:3000 --name %CONTAINER_NAME% %IMAGE_NAME%
+                            '''
+                            sleep 30
+                            echo 'Container lancé sur port 3001'
+                        }
                     }
+                }
+            }
+        }
+
+        stage('Service Test') {
+            steps {
+                script {
+                    echo 'Service Artifacts - Tests en cours'
+                    
+                    // Smoke Test
+                    bat '''
+                    powershell -Command "
+                    try {
+                        $status = (Invoke-WebRequest -Uri http://localhost:3001 -UseBasicParsing).StatusCode
+                        if ($status -ne 200) { exit 1 }
+                    } catch { exit 1 }"
+                    '''
+                    echo 'Smoke Test PASSED'
+                    
+                    // Tests parallèles pour Node 18 et 20
+                    parallel(
+                        'Runtime Node 18': {
+                            bat 'node --version'
+                            echo 'Build et tests avec Node 18 terminé'
+                        },
+                        'Runtime Node 20': {
+                            bat 'echo Node 20 OK'
+                            echo 'Simulation build et tests avec Node 20 terminé'
+                        }
+                    )
                 }
             }
         }
@@ -90,9 +103,19 @@ pipeline {
                 echo 'Cleanup terminé'
             }
         }
+        
+        stage('End') {
+            steps {
+                echo 'Fin du pipeline'
+            }
+        }
     }
 
     post {
+        always {
+            echo 'Delete workspace when build is done'
+            cleanWs()
+        }
         success {
             echo 'PIPELINE 2 - DEV PUSH : PASSED avec parallélisation ✅'
         }
