@@ -7,14 +7,13 @@ pipeline {
     }
 
     triggers {
-        // À remplacer par webhook GitHub si disponible
         pollSCM('H/5 * * * *')
     }
 
     environment {
-        APP_NAME     = "monapp"
-        DOCKER_IMAGE = "monapp:%BUILD_NUMBER%"
-        CONTAINER    = "monapp-%BUILD_NUMBER%"
+        APP_NAME  = "monapp"
+        IMAGE     = "monapp:%BUILD_NUMBER%"
+        CONTAINER = "monapp-%BUILD_NUMBER%"
     }
 
     stages {
@@ -22,7 +21,6 @@ pipeline {
         /* ================= CHECKOUT ================= */
         stage('Checkout') {
             steps {
-                echo "Checkout du code source"
                 checkout scm
             }
         }
@@ -30,8 +28,8 @@ pipeline {
         /* ================= SETUP ================= */
         stage('Setup') {
             steps {
-                echo "Installation des dépendances"
                 bat '''
+                echo === Setup Node ===
                 node -v
                 npm -v
                 npm install
@@ -42,25 +40,29 @@ pipeline {
         /* ================= BUILD ================= */
         stage('Build') {
             steps {
-                echo "Build de l'application"
                 bat 'npm run build'
             }
         }
 
         /* ================= DOCKER BUILD & RUN ================= */
         stage('Docker Build & Run') {
+            when {
+                anyOf {
+                    branch 'dev'
+                    buildingTag()
+                }
+            }
             steps {
-                echo "Build et lancement Docker"
                 bat '''
-                REM Nettoyage préventif
+                echo === Docker Cleanup ===
                 docker stop %CONTAINER% >nul 2>&1
                 docker rm   %CONTAINER% >nul 2>&1
 
-                REM Build image
-                docker build -t %DOCKER_IMAGE% .
+                echo === Docker Build ===
+                docker build -t %IMAGE% .
 
-                REM Run container
-                docker run -d --name %CONTAINER% -p 3000:3000 %DOCKER_IMAGE%
+                echo === Docker Run ===
+                docker run -d --name %CONTAINER% -p 3000:3000 %IMAGE%
 
                 exit /b 0
                 '''
@@ -69,9 +71,15 @@ pipeline {
 
         /* ================= SMOKE TEST ================= */
         stage('Smoke Test') {
+            when {
+                anyOf {
+                    branch 'dev'
+                    expression { env.CHANGE_ID != null }
+                }
+            }
             steps {
-                echo "Smoke Test HTTP"
                 bat '''
+                echo === Smoke Test ===
                 powershell -Command "
                 try {
                     $r = Invoke-WebRequest http://localhost:3000 -UseBasicParsing -TimeoutSec 10
@@ -86,8 +94,13 @@ pipeline {
 
         /* ================= ARCHIVE ================= */
         stage('Archive Artifacts') {
+            when {
+                anyOf {
+                    branch 'dev'
+                    buildingTag()
+                }
+            }
             steps {
-                echo "Archivage des artefacts"
                 archiveArtifacts artifacts: '**/build/**', fingerprint: true
                 archiveArtifacts artifacts: '**/*.log', allowEmptyArchive: true
             }
@@ -96,7 +109,6 @@ pipeline {
         /* ================= CLEANUP ================= */
         stage('Cleanup') {
             steps {
-                echo "Cleanup Docker"
                 bat '''
                 docker stop %CONTAINER% >nul 2>&1
                 docker rm   %CONTAINER% >nul 2>&1
@@ -108,10 +120,10 @@ pipeline {
 
     post {
         success {
-            echo "✅ BUILD DEV RÉUSSI"
+            echo '✅ PIPELINE SUCCEEDED'
         }
         failure {
-            echo "❌ BUILD DEV ÉCHOUÉ"
+            echo '❌ PIPELINE FAILED'
         }
         always {
             cleanWs()
