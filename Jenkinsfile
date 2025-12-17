@@ -30,7 +30,7 @@ pipeline {
         stage('Docker Build') {
             steps {
                 bat 'docker build -t %IMAGE_NAME% .'
-                echo 'Image Docker construite'
+                echo 'Image Docker construite avec succès'
             }
         }
 
@@ -58,7 +58,7 @@ pipeline {
             }
         }
 
-        // === PARALLÉLISATION EXIGÉE PAR LE SUJET ===
+        // PARALLÉLISATION EXIGÉE
         stage('Parallélisation runtime') {
             parallel {
                 stage('Runtime Node 18') {
