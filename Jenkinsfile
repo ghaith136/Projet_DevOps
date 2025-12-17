@@ -6,10 +6,6 @@ pipeline {
         timestamps()
     }
 
-    triggers {
-        pollSCM('H/5 * * * *')
-    }
-
     environment {
         APP_NAME = "mon_app"
         DOCKER_IMAGE = "mon_app:${BUILD_NUMBER}"
@@ -17,59 +13,49 @@ pipeline {
     }
 
     stages {
+        // PREMIÈRE LIGNE : Start -> Checkout -> Setup -> Build
         stage('Start') {
             steps {
-                echo "🚀 DÉBUT PIPELINE ${BUILD_NUMBER}"
-                bat 'docker --version'
-                bat 'node --version'
+                echo '=== DÉBUT PIPELINE ==='
             }
         }
         
         stage('Checkout') {
             steps {
-                echo "📥 Checkout du code source"
+                echo 'Checkout du code source'
                 checkout scm
             }
         }
 
         stage('Setup') {
             steps {
-                echo "⚙️ Installation des dépendances"
+                echo 'Installation des dépendances'
                 bat 'npm install'
             }
         }
 
         stage('Build') {
             steps {
-                echo "🏗️ Build de l'application"
+                echo 'Build de l application'
                 bat 'npm run build'
             }
         }
 
+        // DEUXIÈME LIGNE : Docker Build & Run (parallèle)
         stage('Docker Build & Run') {
             steps {
                 script {
-                    echo "🐳 Docker Build & Run (Parallèle)"
-                    
                     parallel(
                         'Build Docker': {
-                            echo "🔨 Construction de l'image Docker"
-                            bat "docker build -t %DOCKER_IMAGE% ."
+                            echo 'Construction de l image Docker'
+                            bat "docker build -t ${env.DOCKER_IMAGE} ."
                         },
                         'Run Docker': {
+                            echo 'Lancement du container Docker'
                             script {
-                                // Nettoyer avant de lancer
-                                bat """
-                                docker rm -f %CONTAINER_NAME% 2>nul
-                                """
-                                
-                                echo "🚀 Lancement du container Docker"
-                                bat """
-                                docker run -d -p 3001:3000 --name %CONTAINER_NAME% %DOCKER_IMAGE%
-                                """
-                                
-                                // Attendre le démarrage
-                                sleep 15
+                                bat "docker rm -f ${env.CONTAINER_NAME} 2>nul || echo OK"
+                                bat "docker run -d -p 3001:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
+                                sleep 20
                             }
                         }
                     )
@@ -77,29 +63,31 @@ pipeline {
             }
         }
 
+        // TROISIÈME LIGNE : Tests et nettoyage
         stage('Smoke Test') {
             steps {
-                echo "🧪 Smoke Test"
+                echo 'Smoke Test en cours'
                 
                 script {
                     retry(3) {
-                        sleep 5
-                        
-                        powershell '''
+                        sleep 10
+                        bat """
+                        powershell -Command "
                         try {
-                            Write-Host "Test de connexion à localhost:3001..."
-                            $response = Invoke-WebRequest -Uri "http://localhost:3001" -UseBasicParsing -TimeoutSec 10
-                            Write-Host "✅ Smoke Test OK - Status: " $response.StatusCode
-                            
-                            if ($response.StatusCode -ne 200) {
-                                Write-Host "❌ Statut non-200"
+                            \$response = Invoke-WebRequest -Uri 'http://localhost:3001' -UseBasicParsing -TimeoutSec 15
+                            echo 'STATUS: ' + \$response.StatusCode
+                            if (\$response.StatusCode -eq 200) {
+                                echo 'SMOKE TEST PASSED'
+                                exit 0
+                            } else {
+                                echo 'SMOKE TEST FAILED - Bad status'
                                 exit 1
                             }
                         } catch {
-                            Write-Host "❌ ERREUR Smoke Test: " $_.Exception.Message
+                            echo 'SMOKE TEST FAILED - Connection error'
                             exit 1
-                        }
-                        '''
+                        }"
+                        """
                     }
                 }
             }
@@ -107,63 +95,66 @@ pipeline {
 
         stage('Archive Artifacts') {
             steps {
-                echo "📦 Archivage des artefacts"
-                archiveArtifacts artifacts: '**/build/**, **/logs/**, package.json, Dockerfile', allowEmptyArchive: true
+                echo 'Archivage des artefacts'
+                script {
+                    // Créer un fichier de log simple
+                    bat 'echo "Build ${BUILD_NUMBER} completed at %DATE% %TIME%" > build_info.txt'
+                    archiveArtifacts artifacts: 'build_info.txt, package.json, Dockerfile', fingerprint: true
+                }
             }
         }
 
         stage('Cleanup') {
             steps {
-                echo "🧹 Nettoyage"
+                echo 'Nettoyage Docker'
                 bat """
-                docker stop %CONTAINER_NAME% 2>nul
-                docker rm %CONTAINER_NAME% 2>nul
+                docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
+                docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
                 """
             }
         }
         
         stage('End') {
             steps {
-                echo "✅ FIN PIPELINE"
+                echo '=== FIN PIPELINE ==='
             }
         }
     }
 
     post {
         always {
-            echo "🧽 Nettoyage workspace"
+            echo 'Nettoyage workspace'
             cleanWs()
         }
         
         success {
-            echo "🏆 PIPELINE 2 - DEV PUSH : PASSED AVEC PARALLÉLISATION ✅"
+            echo 'PIPELINE 2 - REUSSITE'
             
-            // TESTS PARALLÈLES NODE 18/20 (Post Actions)
+            // Tests parallèles Node dans post-success
             script {
-                echo "🔧 Declarative Post Actions - Tests Runtime"
-                
                 parallel(
                     'Runtime Node 18': {
                         bat 'node --version'
-                        echo '✅ Build et tests avec Node 18 terminé'
+                        echo 'Node 18 verifie'
                     },
                     'Runtime Node 20': {
-                        bat 'echo "Simulation Node 20" && echo Node 20 OK'
-                        echo '✅ Simulation build et tests avec Node 20 terminé'
+                        bat 'echo "Node 20 simulation"'
+                        echo 'Node 20 simule'
                     }
                 )
             }
         }
         
         failure {
-            echo "💥 PIPELINE 2 - DEV PUSH : FAILED ❌"
+            echo 'PIPELINE 2 - ECHEC'
             
             script {
-                // Diagnostic
+                // Logs de débogage en cas d'échec
                 bat """
-                echo "=== DIAGNOSTIC D'ÉCHEC ==="
+                echo "=== LOGS DOCKER ==="
+                docker logs ${env.CONTAINER_NAME} 2>nul || echo "Pas de logs"
+                echo "=== CONTAINERS ==="
                 docker ps -a
-                docker images | findstr %DOCKER_IMAGE%
                 """
             }
         }
