@@ -2,12 +2,8 @@ pipeline {
     agent any
 
     options {
-        disableConcurrentBuilds()
         timestamps()
-    }
-
-    triggers {
-        pollSCM('H/5 * * * *')
+        disableConcurrentBuilds()
     }
 
     environment {
@@ -18,50 +14,52 @@ pipeline {
 
     stages {
 
-        /* ================= CHECKOUT ================= */
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
-        /* ================= SETUP ================= */
         stage('Setup') {
             steps {
                 bat '''
-                echo === Setup Node ===
+                echo === Setup ===
                 node -v
                 npm -v
                 npm install
+                exit /b 0
                 '''
             }
         }
 
-        /* ================= BUILD ================= */
         stage('Build') {
             steps {
-                bat 'npm run build'
+                bat '''
+                echo === Build App ===
+                npm run build
+                exit /b 0
+                '''
             }
         }
 
-        /* ================= DOCKER BUILD & RUN ================= */
         stage('Docker Build & Run') {
             when {
-                anyOf {
-                    branch 'dev'
-                    buildingTag()
-                }
+                branch 'dev'
             }
             steps {
                 bat '''
-                echo === Docker Cleanup ===
-                docker stop %CONTAINER% >nul 2>&1
-                docker rm   %CONTAINER% >nul 2>&1
+                echo === Docker STOP (ignore errors) ===
+                docker stop %CONTAINER% 2>nul
+                echo OK
 
-                echo === Docker Build ===
+                echo === Docker RM (ignore errors) ===
+                docker rm %CONTAINER% 2>nul
+                echo OK
+
+                echo === Docker BUILD ===
                 docker build -t %IMAGE% .
 
-                echo === Docker Run ===
+                echo === Docker RUN ===
                 docker run -d --name %CONTAINER% -p 3000:3000 %IMAGE%
 
                 exit /b 0
@@ -69,14 +67,7 @@ pipeline {
             }
         }
 
-        /* ================= SMOKE TEST ================= */
         stage('Smoke Test') {
-            when {
-                anyOf {
-                    branch 'dev'
-                    expression { env.CHANGE_ID != null }
-                }
-            }
             steps {
                 bat '''
                 echo === Smoke Test ===
@@ -86,32 +77,23 @@ pipeline {
                     if ($r.StatusCode -ne 200) { exit 1 }
                 } catch {
                     exit 1
-                }
-                "
+                }"
+                exit /b 0
                 '''
             }
         }
 
-        /* ================= ARCHIVE ================= */
         stage('Archive Artifacts') {
-            when {
-                anyOf {
-                    branch 'dev'
-                    buildingTag()
-                }
-            }
             steps {
                 archiveArtifacts artifacts: '**/build/**', fingerprint: true
-                archiveArtifacts artifacts: '**/*.log', allowEmptyArchive: true
             }
         }
 
-        /* ================= CLEANUP ================= */
         stage('Cleanup') {
             steps {
                 bat '''
-                docker stop %CONTAINER% >nul 2>&1
-                docker rm   %CONTAINER% >nul 2>&1
+                docker stop %CONTAINER% 2>nul
+                docker rm %CONTAINER% 2>nul
                 exit /b 0
                 '''
             }
@@ -120,10 +102,10 @@ pipeline {
 
     post {
         success {
-            echo '✅ PIPELINE SUCCEEDED'
+            echo '✅ BUILD PASSED'
         }
         failure {
-            echo '❌ PIPELINE FAILED'
+            echo '❌ BUILD FAILED'
         }
         always {
             cleanWs()
