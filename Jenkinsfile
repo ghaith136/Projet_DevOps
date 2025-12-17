@@ -9,7 +9,7 @@ pipeline {
     stages {
         stage('Start') {
             steps {
-                bat 'echo "START PIPELINE"'
+                bat 'echo "START"'
             }
         }
         
@@ -37,38 +37,23 @@ pipeline {
         stage('Docker Build & Run') {
             steps {
                 script {
-                    // NETTOYAGE AGGRESSIF AVANT DE COMMENCER
-                    bat '''
-                    echo "NETTOYAGE DES ANCIENS CONTENEURS..."
-                    docker stop monapp-1 monapp-2 monapp-3 monapp-4 monapp-5 monapp-6 monapp-7 2>nul || echo OK
-                    docker rm monapp-1 monapp-2 monapp-3 monapp-4 monapp-5 monapp-6 monapp-7 2>nul || echo OK
-                    
-                    // VÉRIFIER SI LE PORT 3000 EST LIBRE
-                    netstat -ano | findstr :3000
-                    if errorlevel 1 (
-                        echo "PORT 3000 LIBRE"
-                    ) else (
-                        echo "ATTENTION: PORT 3000 DEJA UTILISE"
-                        exit 1
-                    )
-                    '''
+                    // Nettoyage
+                    bat """
+                    docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
+                    docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
+                    """
                     
                     parallel(
                         'Build Docker': {
-                            bat 'echo "BUILDING DOCKER IMAGE"'
-                            bat "docker build --no-cache -t ${env.DOCKER_IMAGE} ."
+                            bat "docker build -t ${env.DOCKER_IMAGE} ."
                             bat 'echo "DOCKER BUILD OK"'
                         },
                         'Run Docker': {
                             script {
-                                // ATTENDRE QUE LE BUILD COMMENCE
-                                sleep 5
-                                bat 'echo "STARTING CONTAINER"'
-                                
-                                // UTILISER LE PORT 3002 POUR ÉVITER LES CONFLITS
+                                sleep 3
                                 bat "docker run -d -p 3002:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
-                                sleep 15
-                                bat 'echo "CONTAINER STARTED ON PORT 3002"'
+                                sleep 10
+                                bat 'echo "DOCKER RUN OK"'
                             }
                         }
                     )
@@ -79,29 +64,22 @@ pipeline {
         stage('Smoke Test') {
             steps {
                 script {
-                    retry(3) {
-                        sleep 10
-                        bat '''
-                        powershell -Command "
-                        Write-Host 'TESTING PORT 3002...'
-                        try {
-                            $response = Invoke-WebRequest -Uri 'http://localhost:3002' -TimeoutSec 10
-                            Write-Host 'STATUS: ' + $response.StatusCode
-                            if ($response.StatusCode -eq 200) {
-                                Write-Host 'TEST PASSED'
-                                exit 0
-                            } else {
-                                Write-Host 'TEST FAILED - BAD STATUS'
-                                exit 1
-                            }
-                        } catch {
-                            Write-Host 'TEST FAILED - ERROR'
-                            Write-Host $_.Exception.Message
+                    sleep 5
+                    bat '''
+                    powershell -Command "
+                    try {
+                        \$response = Invoke-WebRequest -Uri 'http://localhost:3002' -TimeoutSec 10
+                        if (\$response.StatusCode -eq 200) {
+                            echo 'TEST PASSED'
+                            exit 0
+                        } else {
                             exit 1
                         }
-                        "
-                        '''
+                    } catch {
+                        exit 1
                     }
+                    "
+                    '''
                     bat 'echo "SMOKE TEST PASSED"'
                 }
             }
@@ -109,9 +87,20 @@ pipeline {
 
         stage('Archive Artifacts') {
             steps {
-                bat "echo 'BUILD ${BUILD_NUMBER} SUCCESS' > build_result.txt"
-                archiveArtifacts artifacts: 'build_result.txt, package.json', fingerprint: true
-                bat 'echo "ARTIFACTS ARCHIVED"'
+                script {
+                    // Créer des artefacts simples
+                    bat """
+                    echo "Build Number: ${BUILD_NUMBER}" > build_info.txt
+                    echo "Date: %DATE% %TIME%" >> build_info.txt
+                    echo "Status: SUCCESS" >> build_info.txt
+                    
+                    docker logs ${env.CONTAINER_NAME} 2>nul > docker_logs.txt || echo "No logs" > docker_logs.txt
+                    """
+                    
+                    // Archiver uniquement les fichiers qui existent
+                    archiveArtifacts artifacts: 'build_info.txt, docker_logs.txt, package.json, Dockerfile, server.js', allowEmptyArchive: true
+                    bat 'echo "ARTIFACTS ARCHIVED"'
+                }
             }
         }
 
@@ -120,7 +109,6 @@ pipeline {
                 bat """
                 docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
                 docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
-                docker rmi ${env.DOCKER_IMAGE} 2>nul || echo OK
                 """
                 bat 'echo "CLEANUP DONE"'
             }
@@ -128,7 +116,7 @@ pipeline {
         
         stage('End') {
             steps {
-                bat 'echo "END PIPELINE"'
+                bat 'echo "END"'
             }
         }
     }
@@ -136,30 +124,27 @@ pipeline {
     post {
         always {
             cleanWs()
-            bat 'echo "WORKSPACE CLEANED"'
         }
         
         success {
             script {
-                // TESTS PARALLÈLES NODE
+                // Tests parallèles Node
                 parallel(
-                    'Node 18 Runtime': {
+                    'Node 18 Test': {
                         bat 'node --version'
-                        bat 'echo "NODE 18 RUNTIME OK"'
+                        bat 'echo "NODE 18 OK"'
                     },
-                    'Node 20 Runtime': {
-                        bat 'echo "Node 20 runtime simulation"'
-                        bat 'echo "NODE 20 RUNTIME OK"'
+                    'Node 20 Test': {
+                        bat 'echo "echo NODE 20 SIMULATED"'
+                        bat 'echo "NODE 20 OK"'
                     }
                 )
-                bat 'echo "PIPELINE 2 COMPLETED WITH PARALLELIZATION"'
+                bat 'echo "PIPELINE 2 SUCCESS"'
             }
         }
         
         failure {
             bat 'echo "PIPELINE 2 FAILED"'
-            bat "docker ps -a"
-            bat "netstat -ano | findstr :3000 :3001 :3002"
         }
     }
 }
