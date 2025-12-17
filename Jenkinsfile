@@ -2,10 +2,6 @@ pipeline {
 
     agent any
 
-    triggers {
-        pollSCM('H/5 * * * *')
-    }
-
     environment {
         APP_NAME = "monapp"
         IMAGE_TAG = "dev-${BUILD_NUMBER}"
@@ -18,44 +14,39 @@ pipeline {
 
     stages {
 
-        /* ============================
-           1. CHECKOUT
-        ============================ */
+        stage('Start') {
+            steps {
+                bat 'echo START'
+            }
+        }
+
         stage('Checkout') {
             steps {
                 checkout scm
+                bat 'echo CHECKOUT OK'
             }
         }
 
-        /* ============================
-           2. SETUP
-        ============================ */
         stage('Setup') {
             steps {
-                bat 'node -v'
-                bat 'npm -v'
                 bat 'npm install'
+                bat 'echo SETUP OK'
             }
         }
 
-        /* ============================
-           3. BUILD
-        ============================ */
         stage('Build') {
             steps {
                 bat 'npm run build'
+                bat 'echo BUILD OK'
             }
         }
 
-        /* ============================
-           4. DOCKER BUILD & RUN
-        ============================ */
         stage('Docker Build & Run') {
             steps {
                 script {
-                    // Ignore errors if container does not exist
-                    bat(returnStatus: true, script: "docker stop %CONTAINER_NAME%")
-                    bat(returnStatus: true, script: "docker rm %CONTAINER_NAME%")
+                    // IGNORER les erreurs Docker
+                    bat(returnStatus: true, script: "docker stop ${CONTAINER_NAME}")
+                    bat(returnStatus: true, script: "docker rm ${CONTAINER_NAME}")
                 }
 
                 bat """
@@ -68,9 +59,6 @@ pipeline {
             }
         }
 
-        /* ============================
-           5. SMOKE TEST
-        ============================ */
         stage('Smoke Test') {
             steps {
                 bat """
@@ -80,34 +68,34 @@ pipeline {
             }
         }
 
-        /* ============================
-           6. ARCHIVE ARTIFACTS
-        ============================ */
         stage('Archive Artifacts') {
             steps {
                 archiveArtifacts artifacts: '**/*.log', allowEmptyArchive: true
             }
         }
 
-        /* ============================
-           7. CLEANUP
-        ============================ */
         stage('Cleanup') {
             steps {
                 script {
-                    bat(returnStatus: true, script: "docker stop %CONTAINER_NAME%")
-                    bat(returnStatus: true, script: "docker rm %CONTAINER_NAME%")
+                    bat(returnStatus: true, script: "docker stop ${CONTAINER_NAME}")
+                    bat(returnStatus: true, script: "docker rm ${CONTAINER_NAME}")
                 }
+            }
+        }
+
+        stage('End') {
+            steps {
+                bat 'echo PIPELINE FINISHED'
             }
         }
     }
 
     post {
         success {
-            echo '✅ Build DEV SUCCESS'
+            bat 'echo PIPELINE SUCCESS'
         }
         failure {
-            echo '❌ Build DEV FAILED'
+            bat 'echo PIPELINE FAILED'
         }
         always {
             cleanWs()
