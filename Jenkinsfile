@@ -76,8 +76,8 @@ pipeline {
 
         stage('Archive Artifacts') {
             steps {
-                echo "📦 Archivage des artefacts"
                 archiveArtifacts artifacts: '**/build/**, **/logs/**', fingerprint: true
+                echo "📦 Archivage des artefacts"
             }
         }
 
