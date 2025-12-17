@@ -7,7 +7,7 @@ pipeline {
     }
 
     triggers {
-        // Pipeline déclenché sur push dev (polling ou webhook GitHub)
+        // Déclenchement sur push (ou webhook GitHub)
         pollSCM('H/5 * * * *')
     }
 
@@ -21,7 +21,7 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                echo "📥 Checkout du repository Git"
+                echo "📥 Checkout du code source"
                 checkout scm
             }
         }
@@ -40,31 +40,26 @@ pipeline {
             }
         }
 
-        stage('Docker Build & Run') {
-            parallel {
+        stage('Docker Build') {
+            steps {
+                echo "🐳 Construction de l’image Docker"
+                bat "docker build -t %DOCKER_IMAGE% ."
+            }
+        }
 
-                stage('Docker Build') {
-                    steps {
-                        echo "🐳 Construction de l’image Docker"
-                        bat "docker build -t %DOCKER_IMAGE% ."
-                    }
-                }
-
-                stage('Docker Run') {
-                    steps {
-                        echo "🚀 Démarrage du container Docker"
-                        bat """
-                        docker rm -f %CONTAINER_NAME% 2>nul
-                        docker run -d -p 3000:3000 --name %CONTAINER_NAME% %DOCKER_IMAGE%
-                        """
-                    }
-                }
+        stage('Docker Run') {
+            steps {
+                echo "🚀 Lancement du container Docker"
+                bat """
+                docker rm -f %CONTAINER_NAME% 2>nul
+                docker run -d -p 3000:3000 --name %CONTAINER_NAME% %DOCKER_IMAGE%
+                """
             }
         }
 
         stage('Smoke Test') {
             steps {
-                echo "🧪 Smoke Test de l’application"
+                echo "🧪 Smoke Test – vérification de l’application"
 
                 powershell '''
                 try {
@@ -82,13 +77,13 @@ pipeline {
         stage('Archive Artifacts') {
             steps {
                 echo "📦 Archivage des artefacts"
-                archiveArtifacts artifacts: '**/logs/**, **/build/**', fingerprint: true
+                archiveArtifacts artifacts: '**/build/**, **/logs/**', fingerprint: true
             }
         }
 
         stage('Cleanup') {
             steps {
-                echo "🧹 Nettoyage Docker"
+                echo "🧹 Nettoyage du container Docker"
                 bat """
                 docker stop %CONTAINER_NAME% 2>nul
                 docker rm %CONTAINER_NAME% 2>nul
