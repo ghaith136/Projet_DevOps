@@ -1,111 +1,113 @@
 pipeline {
+
     agent any
 
-    options {
-        timestamps()
-        disableConcurrentBuilds()
+    triggers {
+        pollSCM('H/5 * * * *')
     }
 
     environment {
-        APP_NAME  = "monapp"
-        IMAGE     = "monapp:%BUILD_NUMBER%"
-        CONTAINER = "monapp-%BUILD_NUMBER%"
+        APP_NAME = "monapp"
+        IMAGE_TAG = "dev-${BUILD_NUMBER}"
+        CONTAINER_NAME = "monapp"
+    }
+
+    options {
+        timestamps()
     }
 
     stages {
 
+        /* ============================
+           1. CHECKOUT
+        ============================ */
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
+        /* ============================
+           2. SETUP
+        ============================ */
         stage('Setup') {
             steps {
-                bat '''
-                echo === Setup ===
-                node -v
-                npm -v
-                npm install
-                exit /b 0
-                '''
+                bat 'node -v'
+                bat 'npm -v'
+                bat 'npm install'
             }
         }
 
+        /* ============================
+           3. BUILD
+        ============================ */
         stage('Build') {
             steps {
-                bat '''
-                echo === Build App ===
-                npm run build
-                exit /b 0
-                '''
+                bat 'npm run build'
             }
         }
 
+        /* ============================
+           4. DOCKER BUILD & RUN
+        ============================ */
         stage('Docker Build & Run') {
-            when {
-                branch 'dev'
-            }
             steps {
-                bat '''
-                echo === Docker STOP (ignore errors) ===
-                docker stop %CONTAINER% 2>nul
-                echo OK
+                script {
+                    // Ignore errors if container does not exist
+                    bat(returnStatus: true, script: "docker stop %CONTAINER_NAME%")
+                    bat(returnStatus: true, script: "docker rm %CONTAINER_NAME%")
+                }
 
-                echo === Docker RM (ignore errors) ===
-                docker rm %CONTAINER% 2>nul
-                echo OK
+                bat """
+                echo ===== Docker Build =====
+                docker build -t %APP_NAME%:%IMAGE_TAG% .
 
-                echo === Docker BUILD ===
-                docker build -t %IMAGE% .
-
-                echo === Docker RUN ===
-                docker run -d --name %CONTAINER% -p 3000:3000 %IMAGE%
-
-                exit /b 0
-                '''
+                echo ===== Docker Run =====
+                docker run -d --name %CONTAINER_NAME% -p 3000:3000 %APP_NAME%:%IMAGE_TAG%
+                """
             }
         }
 
+        /* ============================
+           5. SMOKE TEST
+        ============================ */
         stage('Smoke Test') {
             steps {
-                bat '''
-                echo === Smoke Test ===
-                powershell -Command "
-                try {
-                    $r = Invoke-WebRequest http://localhost:3000 -UseBasicParsing -TimeoutSec 10
-                    if ($r.StatusCode -ne 200) { exit 1 }
-                } catch {
-                    exit 1
-                }"
-                exit /b 0
-                '''
+                bat """
+                echo ===== Smoke Test =====
+                curl http://localhost:3000 || exit /b 1
+                """
             }
         }
 
+        /* ============================
+           6. ARCHIVE ARTIFACTS
+        ============================ */
         stage('Archive Artifacts') {
             steps {
-                archiveArtifacts artifacts: '**/build/**', fingerprint: true
+                archiveArtifacts artifacts: '**/*.log', allowEmptyArchive: true
             }
         }
 
+        /* ============================
+           7. CLEANUP
+        ============================ */
         stage('Cleanup') {
             steps {
-                bat '''
-                docker stop %CONTAINER% 2>nul
-                docker rm %CONTAINER% 2>nul
-                exit /b 0
-                '''
+                script {
+                    bat(returnStatus: true, script: "docker stop %CONTAINER_NAME%")
+                    bat(returnStatus: true, script: "docker rm %CONTAINER_NAME%")
+                }
             }
         }
     }
 
     post {
         success {
-            echo '✅ BUILD PASSED'
+            echo '✅ Build DEV SUCCESS'
         }
         failure {
-            echo '❌ BUILD FAILED'
+            echo '❌ Build DEV FAILED'
         }
         always {
             cleanWs()
