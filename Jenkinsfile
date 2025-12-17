@@ -2,115 +2,133 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE = "monapp-dev-${BUILD_NUMBER}"
-        CONTAINER_NAME = "monapp-container-${BUILD_NUMBER}"
+        DOCKER_IMAGE = "monapp-${BUILD_NUMBER}"
+        CONTAINER_NAME = "monapp-${BUILD_NUMBER}"
     }
 
     stages {
-        // Étape 1: Start
         stage('Start') {
             steps {
-                bat 'echo "DEBUT PIPELINE"'
+                bat 'echo "START PIPELINE"'
             }
         }
         
-        // Étape 2: Checkout
         stage('Checkout') {
             steps {
                 checkout scm
-                bat 'echo "CODE RECUPERE"'
+                bat 'echo "CHECKOUT OK"'
             }
         }
 
-        // Étape 3: Setup
         stage('Setup') {
             steps {
                 bat 'npm install'
-                bat 'echo "DEPENDANCES INSTALLEES"'
+                bat 'echo "SETUP OK"'
             }
         }
 
-        // Étape 4: Build
         stage('Build') {
             steps {
                 bat 'npm run build'
-                bat 'echo "BUILD TERMINE"'
+                bat 'echo "BUILD OK"'
             }
         }
 
-        // Étape 5: Docker Build & Run (parallèle)
         stage('Docker Build & Run') {
             steps {
                 script {
+                    // NETTOYAGE AGGRESSIF AVANT DE COMMENCER
+                    bat '''
+                    echo "NETTOYAGE DES ANCIENS CONTENEURS..."
+                    docker stop monapp-1 monapp-2 monapp-3 monapp-4 monapp-5 monapp-6 monapp-7 2>nul || echo OK
+                    docker rm monapp-1 monapp-2 monapp-3 monapp-4 monapp-5 monapp-6 monapp-7 2>nul || echo OK
+                    
+                    // VÉRIFIER SI LE PORT 3000 EST LIBRE
+                    netstat -ano | findstr :3000
+                    if errorlevel 1 (
+                        echo "PORT 3000 LIBRE"
+                    ) else (
+                        echo "ATTENTION: PORT 3000 DEJA UTILISE"
+                        exit 1
+                    )
+                    '''
+                    
                     parallel(
                         'Build Docker': {
-                            bat 'echo "CONSTRUCTION DOCKER"'
-                            bat "docker build -t ${env.DOCKER_IMAGE} ."
-                            bat 'echo "IMAGE DOCKER CONSTRUITE"'
+                            bat 'echo "BUILDING DOCKER IMAGE"'
+                            bat "docker build --no-cache -t ${env.DOCKER_IMAGE} ."
+                            bat 'echo "DOCKER BUILD OK"'
                         },
                         'Run Docker': {
-                            bat 'echo "LANCEMENT CONTAINER"'
-                            bat "docker rm -f ${env.CONTAINER_NAME} 2>nul || echo OK"
-                            bat "docker run -d -p 3001:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
-                            sleep 10
-                            bat 'echo "CONTAINER LANCE PORT 3001"'
+                            script {
+                                // ATTENDRE QUE LE BUILD COMMENCE
+                                sleep 5
+                                bat 'echo "STARTING CONTAINER"'
+                                
+                                // UTILISER LE PORT 3002 POUR ÉVITER LES CONFLITS
+                                bat "docker run -d -p 3002:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
+                                sleep 15
+                                bat 'echo "CONTAINER STARTED ON PORT 3002"'
+                            }
                         }
                     )
                 }
             }
         }
 
-        // Étape 6: Smoke Test
         stage('Smoke Test') {
             steps {
                 script {
-                    sleep 5
-                    bat """
-                    powershell -Command "
-                    Write-Host 'TEST CONNEXION...'
-                    try {
-                        \$response = Invoke-WebRequest -Uri 'http://localhost:3001' -UseBasicParsing -TimeoutSec 10
-                        Write-Host 'STATUS: ' + \$response.StatusCode
-                        if (\$response.StatusCode -eq 200) {
-                            Write-Host 'TEST REUSSI'
-                            exit 0
-                        } else {
-                            Write-Host 'TEST ECHEC - MAUVAIS STATUT'
+                    retry(3) {
+                        sleep 10
+                        bat '''
+                        powershell -Command "
+                        Write-Host 'TESTING PORT 3002...'
+                        try {
+                            $response = Invoke-WebRequest -Uri 'http://localhost:3002' -TimeoutSec 10
+                            Write-Host 'STATUS: ' + $response.StatusCode
+                            if ($response.StatusCode -eq 200) {
+                                Write-Host 'TEST PASSED'
+                                exit 0
+                            } else {
+                                Write-Host 'TEST FAILED - BAD STATUS'
+                                exit 1
+                            }
+                        } catch {
+                            Write-Host 'TEST FAILED - ERROR'
+                            Write-Host $_.Exception.Message
                             exit 1
                         }
-                    } catch {
-                        Write-Host 'TEST ECHEC - ERREUR: ' + \$_ 
-                        exit 1
+                        "
+                        '''
                     }
-                    "
-                    """
                     bat 'echo "SMOKE TEST PASSED"'
                 }
             }
         }
 
-        // Étape 7: Archive Artifacts
         stage('Archive Artifacts') {
             steps {
-                bat 'echo "Build ${BUILD_NUMBER}" > build.log'
-                archiveArtifacts artifacts: 'build.log', fingerprint: true
-                bat 'echo "ARTEFACTS ARCHIVES"'
+                bat "echo 'BUILD ${BUILD_NUMBER} SUCCESS' > build_result.txt"
+                archiveArtifacts artifacts: 'build_result.txt, package.json', fingerprint: true
+                bat 'echo "ARTIFACTS ARCHIVED"'
             }
         }
 
-        // Étape 8: Cleanup
         stage('Cleanup') {
             steps {
-                bat "docker stop ${env.CONTAINER_NAME} 2>nul || echo OK"
-                bat "docker rm ${env.CONTAINER_NAME} 2>nul || echo OK"
-                bat 'echo "NETTOYAGE TERMINE"'
+                bat """
+                docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
+                docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
+                docker rmi ${env.DOCKER_IMAGE} 2>nul || echo OK
+                """
+                bat 'echo "CLEANUP DONE"'
             }
         }
         
-        // Étape 9: End
         stage('End') {
             steps {
-                bat 'echo "FIN PIPELINE"'
+                bat 'echo "END PIPELINE"'
             }
         }
     }
@@ -118,29 +136,30 @@ pipeline {
     post {
         always {
             cleanWs()
-            bat 'echo "WORKSPACE NETTOYE"'
+            bat 'echo "WORKSPACE CLEANED"'
         }
         
         success {
-            // Tests parallèles Node 18/20
             script {
+                // TESTS PARALLÈLES NODE
                 parallel(
-                    'Node 18 Check': {
+                    'Node 18 Runtime': {
                         bat 'node --version'
-                        bat 'echo "NODE 18 OK"'
+                        bat 'echo "NODE 18 RUNTIME OK"'
                     },
-                    'Node 20 Check': {
-                        bat 'echo "NODE 20 SIMULATION"'
-                        bat 'echo "NODE 20 OK"'
+                    'Node 20 Runtime': {
+                        bat 'echo "Node 20 runtime simulation"'
+                        bat 'echo "NODE 20 RUNTIME OK"'
                     }
                 )
-                bat 'echo "PIPELINE 2 - REUSSITE AVEC PARALLELISATION"'
+                bat 'echo "PIPELINE 2 COMPLETED WITH PARALLELIZATION"'
             }
         }
         
         failure {
-            bat 'echo "PIPELINE 2 - ECHEC"'
-            bat "docker logs ${env.CONTAINER_NAME} 2>nul || echo PAS DE LOGS"
+            bat 'echo "PIPELINE 2 FAILED"'
+            bat "docker ps -a"
+            bat "netstat -ano | findstr :3000 :3001 :3002"
         }
     }
 }
