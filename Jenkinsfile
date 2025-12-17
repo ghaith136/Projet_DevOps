@@ -3,41 +3,55 @@ pipeline {
 
     stages {
         stage('Checkout') {
-            steps { checkout scm }
+            steps {
+                checkout scm
+            }
         }
 
         stage('Setup') {
-            steps { sh 'npm install' }
+            steps {
+                bat 'npm install'
+            }
         }
 
         stage('Build') {
-            steps { sh 'npm run build || echo "No build script, skip"' }
+            steps {
+                bat 'npm run build || echo "No build script, skipping"'
+            }
         }
 
-        stage('Run Docker') {
+        stage('Run (Docker)') {
             steps {
-                sh 'docker build -t myapp .'
-                sh 'docker run -d -p 3000:3000 --name myapp myapp'
+                bat 'docker build -t myapp .'
+                bat 'docker run -d -p 3000:3000 --name myapp myapp'
+                sleep 20  // attente démarrage
             }
         }
 
         stage('Smoke Test') {
             steps {
-                sh './smoke.sh'
+                bat 'smoke.bat'   // on va créer ce fichier juste après
             }
         }
 
-        stage('Archive') {
+        stage('Archive Artifacts') {
             steps {
-                archiveArtifacts artifacts: '**/logs/**', fingerprint: true
+                archiveArtifacts artifacts: '**/*.log, smoke-result.txt', allowEmptyArchive: true
             }
         }
 
         stage('Cleanup') {
             steps {
-                sh 'docker rm -f $(docker ps -aq || true)'
-                sh 'docker rmi myapp || true'
+                bat 'docker stop myapp || exit 0'
+                bat 'docker rm myapp || exit 0'
+                bat 'docker rmi myapp || exit 0'
             }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline terminé : ${currentBuild.currentResult}"
         }
     }
 }
