@@ -44,17 +44,17 @@ pipeline {
             }
         }
 
-        stage('Docker Run') {
-            steps {
-                bat '''
-                echo Nettoyage des anciens conteneurs...
-                docker rm -f %CONTAINER_NAME% || exit 0
+       stage('Docker Run') {
+    steps {
+        bat '''
+        echo Nettoyage anciens conteneurs...
+        docker rm -f monapp || exit 0
 
-                echo Lancement du conteneur...
-                docker run -d -p 3000:3000 --name %CONTAINER_NAME% %IMAGE_NAME%
-                '''
-            }
-        }
+        echo Lancement du conteneur sans port fixe...
+        docker run -d --name monapp monapp:latest
+        '''
+    }
+}
 
         stage('Smoke Test') {
             steps {
