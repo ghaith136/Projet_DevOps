@@ -1,57 +1,62 @@
 pipeline {
     agent any
 
+    environment {
+        // Définir des variables si nécessaire
+        APP_NAME = 'MonApp'
+        IMAGE_NAME = 'monapp:latest'
+    }
+
     stages {
         stage('Checkout') {
             steps {
+                echo 'Récupération du code depuis GitHub...'
                 checkout scm
             }
         }
 
-        stage('Setup') {
+        stage('Install Dependencies') {
             steps {
+                echo 'Installation des dépendances...'
                 bat 'npm install'
             }
         }
 
         stage('Build') {
             steps {
-                bat 'npm run build || echo "No build script, skipping"'
+                echo 'Compilation / Build de l’application...'
+                bat 'npm run build'
             }
         }
 
-        stage('Run (Docker)') {
+        stage('Test') {
             steps {
-                bat 'docker build -t myapp .'
-                bat 'docker run -d -p 3000:3000 --name myapp myapp'
-                sleep 20  // attente démarrage
+                echo 'Lancement des tests...'
+                bat 'npm test'
             }
         }
 
-        stage('Smoke Test') {
+        stage('Docker Build') {
             steps {
-                bat 'smoke.bat'   // on va créer ce fichier juste après
+                echo 'Construction de l’image Docker...'
+                bat 'docker build -t %IMAGE_NAME% .'
             }
         }
 
-        stage('Archive Artifacts') {
+        stage('Docker Run') {
             steps {
-                archiveArtifacts artifacts: '**/*.log, smoke-result.txt', allowEmptyArchive: true
-            }
-        }
-
-        stage('Cleanup') {
-            steps {
-                bat 'docker stop myapp || exit 0'
-                bat 'docker rm myapp || exit 0'
-                bat 'docker rmi myapp || exit 0'
+                echo 'Démarrage du conteneur Docker...'
+                bat 'docker run -d -p 3000:3000 %IMAGE_NAME%'
             }
         }
     }
 
     post {
-        always {
-            echo "Pipeline terminé : ${currentBuild.currentResult}"
+        success {
+            echo 'Pipeline terminé avec succès ✅'
+        }
+        failure {
+            echo 'Pipeline échoué ❌'
         }
     }
 }
