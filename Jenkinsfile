@@ -1,162 +1,146 @@
 pipeline {
     agent any
 
-    options {
-        disableConcurrentBuilds()
-        timestamps()
-    }
-
     environment {
-        APP_NAME = "mon_app"
-        DOCKER_IMAGE = "mon_app:${BUILD_NUMBER}"
-        CONTAINER_NAME = "mon_app_${BUILD_NUMBER}"
+        DOCKER_IMAGE = "monapp-dev-${BUILD_NUMBER}"
+        CONTAINER_NAME = "monapp-container-${BUILD_NUMBER}"
     }
 
     stages {
-        // PREMIÈRE LIGNE : Start -> Checkout -> Setup -> Build
+        // Étape 1: Start
         stage('Start') {
             steps {
-                echo '=== DÉBUT PIPELINE ==='
+                bat 'echo "DEBUT PIPELINE"'
             }
         }
         
+        // Étape 2: Checkout
         stage('Checkout') {
             steps {
-                echo 'Checkout du code source'
                 checkout scm
+                bat 'echo "CODE RECUPERE"'
             }
         }
 
+        // Étape 3: Setup
         stage('Setup') {
             steps {
-                echo 'Installation des dépendances'
                 bat 'npm install'
+                bat 'echo "DEPENDANCES INSTALLEES"'
             }
         }
 
+        // Étape 4: Build
         stage('Build') {
             steps {
-                echo 'Build de l application'
                 bat 'npm run build'
+                bat 'echo "BUILD TERMINE"'
             }
         }
 
-        // DEUXIÈME LIGNE : Docker Build & Run (parallèle)
+        // Étape 5: Docker Build & Run (parallèle)
         stage('Docker Build & Run') {
             steps {
                 script {
                     parallel(
                         'Build Docker': {
-                            echo 'Construction de l image Docker'
+                            bat 'echo "CONSTRUCTION DOCKER"'
                             bat "docker build -t ${env.DOCKER_IMAGE} ."
+                            bat 'echo "IMAGE DOCKER CONSTRUITE"'
                         },
                         'Run Docker': {
-                            echo 'Lancement du container Docker'
-                            script {
-                                bat "docker rm -f ${env.CONTAINER_NAME} 2>nul || echo OK"
-                                bat "docker run -d -p 3001:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
-                                sleep 20
-                            }
+                            bat 'echo "LANCEMENT CONTAINER"'
+                            bat "docker rm -f ${env.CONTAINER_NAME} 2>nul || echo OK"
+                            bat "docker run -d -p 3001:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
+                            sleep 10
+                            bat 'echo "CONTAINER LANCE PORT 3001"'
                         }
                     )
                 }
             }
         }
 
-        // TROISIÈME LIGNE : Tests et nettoyage
+        // Étape 6: Smoke Test
         stage('Smoke Test') {
             steps {
-                echo 'Smoke Test en cours'
-                
                 script {
-                    retry(3) {
-                        sleep 10
-                        bat """
-                        powershell -Command "
-                        try {
-                            \$response = Invoke-WebRequest -Uri 'http://localhost:3001' -UseBasicParsing -TimeoutSec 15
-                            echo 'STATUS: ' + \$response.StatusCode
-                            if (\$response.StatusCode -eq 200) {
-                                echo 'SMOKE TEST PASSED'
-                                exit 0
-                            } else {
-                                echo 'SMOKE TEST FAILED - Bad status'
-                                exit 1
-                            }
-                        } catch {
-                            echo 'SMOKE TEST FAILED - Connection error'
+                    sleep 5
+                    bat """
+                    powershell -Command "
+                    Write-Host 'TEST CONNEXION...'
+                    try {
+                        \$response = Invoke-WebRequest -Uri 'http://localhost:3001' -UseBasicParsing -TimeoutSec 10
+                        Write-Host 'STATUS: ' + \$response.StatusCode
+                        if (\$response.StatusCode -eq 200) {
+                            Write-Host 'TEST REUSSI'
+                            exit 0
+                        } else {
+                            Write-Host 'TEST ECHEC - MAUVAIS STATUT'
                             exit 1
-                        }"
-                        """
+                        }
+                    } catch {
+                        Write-Host 'TEST ECHEC - ERREUR: ' + \$_ 
+                        exit 1
                     }
+                    "
+                    """
+                    bat 'echo "SMOKE TEST PASSED"'
                 }
             }
         }
 
+        // Étape 7: Archive Artifacts
         stage('Archive Artifacts') {
             steps {
-                echo 'Archivage des artefacts'
-                script {
-                    // Créer un fichier de log simple
-                    bat 'echo "Build ${BUILD_NUMBER} completed at %DATE% %TIME%" > build_info.txt'
-                    archiveArtifacts artifacts: 'build_info.txt, package.json, Dockerfile', fingerprint: true
-                }
+                bat 'echo "Build ${BUILD_NUMBER}" > build.log'
+                archiveArtifacts artifacts: 'build.log', fingerprint: true
+                bat 'echo "ARTEFACTS ARCHIVES"'
             }
         }
 
+        // Étape 8: Cleanup
         stage('Cleanup') {
             steps {
-                echo 'Nettoyage Docker'
-                bat """
-                docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
-                docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
-                """
+                bat "docker stop ${env.CONTAINER_NAME} 2>nul || echo OK"
+                bat "docker rm ${env.CONTAINER_NAME} 2>nul || echo OK"
+                bat 'echo "NETTOYAGE TERMINE"'
             }
         }
         
+        // Étape 9: End
         stage('End') {
             steps {
-                echo '=== FIN PIPELINE ==='
+                bat 'echo "FIN PIPELINE"'
             }
         }
     }
 
     post {
         always {
-            echo 'Nettoyage workspace'
             cleanWs()
+            bat 'echo "WORKSPACE NETTOYE"'
         }
         
         success {
-            echo 'PIPELINE 2 - REUSSITE'
-            
-            // Tests parallèles Node dans post-success
+            // Tests parallèles Node 18/20
             script {
                 parallel(
-                    'Runtime Node 18': {
+                    'Node 18 Check': {
                         bat 'node --version'
-                        echo 'Node 18 verifie'
+                        bat 'echo "NODE 18 OK"'
                     },
-                    'Runtime Node 20': {
-                        bat 'echo "Node 20 simulation"'
-                        echo 'Node 20 simule'
+                    'Node 20 Check': {
+                        bat 'echo "NODE 20 SIMULATION"'
+                        bat 'echo "NODE 20 OK"'
                     }
                 )
+                bat 'echo "PIPELINE 2 - REUSSITE AVEC PARALLELISATION"'
             }
         }
         
         failure {
-            echo 'PIPELINE 2 - ECHEC'
-            
-            script {
-                // Logs de débogage en cas d'échec
-                bat """
-                echo "=== LOGS DOCKER ==="
-                docker logs ${env.CONTAINER_NAME} 2>nul || echo "Pas de logs"
-                echo "=== CONTAINERS ==="
-                docker ps -a
-                """
-            }
+            bat 'echo "PIPELINE 2 - ECHEC"'
+            bat "docker logs ${env.CONTAINER_NAME} 2>nul || echo PAS DE LOGS"
         }
     }
 }
