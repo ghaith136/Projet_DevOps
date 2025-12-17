@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME = "monapp:latest"
+        IMAGE_NAME     = "monapp:latest"
         CONTAINER_NAME = "monapp"
     }
 
@@ -11,12 +11,6 @@ pipeline {
         stage('Checkout SCM') {
             steps {
                 checkout scm
-            }
-        }
-
-        stage('Checkout') {
-            steps {
-                echo "Source code checked out"
             }
         }
 
@@ -44,26 +38,23 @@ pipeline {
             }
         }
 
-       stage('Docker Run') {
-    steps {
-        bat '''
-        echo Nettoyage anciens conteneurs...
-        docker rm -f monapp || exit 0
+        stage('Docker Run') {
+            steps {
+                bat '''
+                echo Nettoyage ancien conteneur...
+                docker rm -f %CONTAINER_NAME% || exit 0
 
-        echo Lancement du conteneur sans port fixe...
-        docker run -d --name monapp monapp:latest
-        '''
-    }
-}
+                echo Lancement du conteneur (sans mapping de port)...
+                docker run -d --name %CONTAINER_NAME% %IMAGE_NAME%
+                '''
+            }
+        }
 
         stage('Smoke Test') {
             steps {
                 bat '''
-                echo Attente du démarrage de l'application...
-                timeout /t 5
-
-                echo Test de l'application...
-                curl http://localhost:3000 || exit 1
+                echo Smoke test interne au conteneur...
+                docker exec %CONTAINER_NAME% curl http://localhost:3000 || exit 1
                 '''
             }
         }
@@ -77,7 +68,7 @@ pipeline {
 
     post {
         always {
-            echo "Nettoyage final"
+            echo "Cleanup final..."
             bat 'docker rm -f %CONTAINER_NAME% || exit 0'
         }
 
