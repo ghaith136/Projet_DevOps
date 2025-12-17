@@ -2,61 +2,91 @@ pipeline {
     agent any
 
     environment {
-        // Définir des variables si nécessaire
-        APP_NAME = 'MonApp'
-        IMAGE_NAME = 'monapp:latest'
+        IMAGE_NAME = "monapp:latest"
+        CONTAINER_NAME = "monapp"
     }
 
     stages {
+
+        stage('Checkout SCM') {
+            steps {
+                checkout scm
+            }
+        }
+
         stage('Checkout') {
             steps {
-                echo 'Récupération du code depuis GitHub...'
-                checkout scm
+                echo "Source code checked out"
             }
         }
 
         stage('Install Dependencies') {
             steps {
-                echo 'Installation des dépendances...'
                 bat 'npm install'
             }
         }
 
         stage('Build') {
             steps {
-                echo 'Compilation / Build de l’application...'
                 bat 'npm run build'
             }
         }
 
         stage('Test') {
             steps {
-                echo 'Lancement des tests...'
-                bat 'npm test'
+                bat 'npm run test'
             }
         }
 
         stage('Docker Build') {
             steps {
-                echo 'Construction de l’image Docker...'
                 bat 'docker build -t %IMAGE_NAME% .'
             }
         }
 
         stage('Docker Run') {
             steps {
-                echo 'Démarrage du conteneur Docker...'
-                bat 'docker run -d -p 3000:3000 %IMAGE_NAME%'
+                bat '''
+                echo Nettoyage des anciens conteneurs...
+                docker rm -f %CONTAINER_NAME% || exit 0
+
+                echo Lancement du conteneur...
+                docker run -d -p 3000:3000 --name %CONTAINER_NAME% %IMAGE_NAME%
+                '''
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                bat '''
+                echo Attente du démarrage de l'application...
+                timeout /t 5
+
+                echo Test de l'application...
+                curl http://localhost:3000 || exit 1
+                '''
+            }
+        }
+
+        stage('Archive Artifacts') {
+            steps {
+                archiveArtifacts artifacts: '**/*.log', fingerprint: true
             }
         }
     }
 
     post {
-        success {
-            echo 'Pipeline terminé avec succès ✅'
+        always {
+            echo "Nettoyage final"
+            bat 'docker rm -f %CONTAINER_NAME% || exit 0'
         }
+
+        success {
+            echo "PIPELINE PR PASSED ✅"
+        }
+
         failure {
-            echo 'Pipeline échoué ❌'
+            echo "PIPELINE PR FAILED ❌"
         }
     }
 }
