@@ -45,12 +45,12 @@ pipeline {
                     
                     // VERIFIER LES PORTS
                     echo "Verification des ports..."
-                    netstat -ano | findstr :3000
+                    netstat -ano | findstr :3002
                     if errorlevel 1 (
-                        echo "Port 3000 libre"
+                        echo "Port 3002 libre"
                     ) else (
                         echo "ATTENTION: Port 3002 deja utilise"
-                        taskkill /F /PID $(netstat -ano | findstr :3000 | awk '{print \$5}') 2>nul || echo "Impossible de liberer le port"
+                        taskkill /F /PID $(netstat -ano | findstr :3002 | awk '{print \$5}') 2>nul || echo "Impossible de liberer le port"
                     )
                     """
                     
@@ -62,7 +62,7 @@ pipeline {
                         'Run Docker': {
                             script {
                                 sleep 5  // Attendre que le build commence
-                                bat "docker run -d -p 3000:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
+                                bat "docker run -d -p 3002:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
                                 
                                 // Attendre et verifier que le conteneur tourne
                                 sleep 20
@@ -73,7 +73,7 @@ pipeline {
                                     docker logs ${env.CONTAINER_NAME} 2>nul || echo "Pas de logs disponibles"
                                     exit 1
                                 )
-                                echo "Conteneur lance avec succes sur port 3000"
+                                echo "Conteneur lance avec succes sur port 3002"
                                 """
                             }
                         }
@@ -108,7 +108,7 @@ pipeline {
                     while (\$retryCount -lt \$maxRetries -and !\$success) {
                         try {
                             Write-Host \"Tentative \$(\$retryCount + 1)/\$maxRetries...\"
-                            \$response = Invoke-WebRequest -Uri 'http://localhost:3000' -UseBasicParsing -TimeoutSec 10
+                            \$response = Invoke-WebRequest -Uri 'http://localhost:3002' -UseBasicParsing -TimeoutSec 10
                             
                             if (\$response.StatusCode -eq 200) {
                                 Write-Host '✅ SUCCES: Status 200'
@@ -139,7 +139,7 @@ pipeline {
                         
                         // Debug: verifier les ports
                         Write-Host \"=== PORTS OUVERTS ===\"
-                        netstat -ano | findstr :3000
+                        netstat -ano | findstr :3002
                         
                         exit 1
                     }
@@ -159,7 +159,7 @@ pipeline {
                     echo "Pipeline 2 - Build #${BUILD_NUMBER}" > build_info.txt
                     echo "Date: %DATE% %TIME%" >> build_info.txt
                     echo "Status: SUCCESS" >> build_info.txt
-                    echo "Port utilise: 3000" >> build_info.txt
+                    echo "Port utilise: 3002" >> build_info.txt
                     
                     // Sauvegarder les logs Docker
                     docker logs ${env.CONTAINER_NAME} 2>nul > docker_logs.txt || echo "Pas de logs disponibles" > docker_logs.txt
