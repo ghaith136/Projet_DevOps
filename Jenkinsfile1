@@ -7,7 +7,6 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '5'))
     }
 
-    // Déclenché par webhook GitHub sur Pull Request vers dev
     triggers {
         githubPush()
     }
@@ -18,7 +17,7 @@ pipeline {
         BRANCH_NAME = "${env.CHANGE_BRANCH ?: env.BRANCH_NAME ?: 'unknown'}"
         DOCKER_IMAGE = "meteo-app-pr-${PR_NUMBER}"
         CONTAINER_NAME = "meteo-app-pr-${PR_NUMBER}"
-        HOST_PORT = "3001"  # Port dédié pour PR
+        HOST_PORT = "3001"  // Port dédié pour PR
         DOCKER_PORT = "3000"
     }
 
@@ -28,234 +27,114 @@ pipeline {
     }
 
     stages {
-        // ===== ÉTAPE 1: PRÉPARATION =====
         stage('PR Info') {
             steps {
                 script {
-                    echo "🔀 PIPELINE 1: Build & Smoke sur PR"
-                    echo "📌 PR #${env.PR_NUMBER}"
-                    echo "🌿 Branche: ${env.BRANCH_NAME}"
-                    echo "🔧 Node.js: ${params.NODE_VERSION}"
-                    echo "🧪 Tests: ${params.RUN_TESTS ? 'Activés' : 'Désactivés'}"
-                    
-                    // Afficher les changements
-                    bat """
-                    echo === INFORMATIONS PR ===
-                    git log --oneline -5 2>nul || echo "Git non initialisé"
-                    """
+                    echo "PIPELINE 1: Build & Smoke sur PR"
+                    echo "PR #${env.PR_NUMBER}"
+                    echo "Branche: ${env.BRANCH_NAME}"
+                    echo "Node.js: ${params.NODE_VERSION}"
+                    echo "Tests: ${params.RUN_TESTS ? 'Activés' : 'Désactivés'}"
                 }
             }
         }
-
-        // ===== ÉTAPE 2: CHECKOUT PR =====
+        
         stage('Checkout PR') {
             steps {
-                echo "📥 Récupération du code PR"
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '${sha1}']],
-                    extensions: [
-                        [$class: 'PreBuildMerge', options: [mergeTarget: 'origin/dev', mergeStrategy: 'DEFAULT', fastForwardMode: 'FF']]
-                    ],
-                    userRemoteConfigs: [[
-                        refspec: '+refs/pull/${CHANGE_ID}/merge:refs/remotes/origin/PR-${CHANGE_ID}',
-                        url: 'https://github.com/votre-repo/projet-devops.git'
-                    ]]
-                ])
-                
+                echo "Récupération du code PR"
+                checkout scm
                 bat 'dir'
             }
         }
 
-        // ===== ÉTAPE 3: INSTALLATION =====
         stage('Install & Lint') {
             steps {
-                parallel(
-                    'Install Dependencies': {
-                        bat """
-                        echo 📦 Installation des dépendances...
-                        npm ci
-                        echo ✅ Dépendances installées
-                        """
-                    },
-                    'Code Analysis': {
-                        script {
-                            echo "🔍 Analyse du code"
-                            bat """
-                            echo Vérification syntaxe...
-                            node -c server.js && echo ✅ Syntaxe OK || echo ❌ Erreur syntaxe
-                            
-                            echo Vérification package.json...
-                            npm audit --audit-level=high 2>&1 | tee audit_report.txt || echo Audit terminé
-                            """
-                        }
-                    }
-                )
-            }
-        }
-
-        // ===== ÉTAPE 4: BUILD =====
-        stage('Build') {
-            steps {
-                echo "🏗️ Construction"
                 bat """
-                echo Build de l'application...
-                npm run build
-                echo ✅ Build terminé
-                
-                echo === RAPPORT BUILD ===
-                echo "PR: ${env.PR_NUMBER}" > pr_build_info.txt
-                echo "Branche: ${env.BRANCH_NAME}" >> pr_build_info.txt
-                echo "Date: %DATE% %TIME%" >> pr_build_info.txt
-                node --version >> pr_build_info.txt
+                npm install
+                echo Dépendances installées
                 """
             }
         }
 
-        // ===== ÉTAPE 5: TESTS UNITAIRE =====
+        stage('Build') {
+            steps {
+                bat """
+                npm run build
+                echo Build terminé
+                """
+            }
+        }
+
         stage('Unit Tests') {
             when {
                 expression { params.RUN_TESTS == true }
             }
             steps {
-                echo "🧪 Tests unitaires"
                 bat """
-                echo Exécution des tests...
-                npm test 2>&1 | tee test_results.txt
-                
-                if errorlevel 1 (
-                    echo ❌ Tests échoués
-                    exit 1
-                )
-                echo ✅ Tests réussis
+                npm test
+                echo Tests réussis
                 """
             }
         }
 
-        // ===== ÉTAPE 6: DOCKER BUILD =====
         stage('Docker Build') {
             steps {
-                echo "🐳 Construction Docker"
                 bat """
-                echo Construction image pour PR...
                 docker build -t ${env.DOCKER_IMAGE} .
-                echo ✅ Image construite: ${env.DOCKER_IMAGE}
+                echo Image construite: ${env.DOCKER_IMAGE}
                 """
             }
         }
 
-        // ===== ÉTAPE 7: SMOKE TEST =====
         stage('Smoke Test') {
             steps {
                 script {
-                    echo "🚀 Smoke Test"
-                    
-                    // Nettoyage préalable
                     bat """
-                    echo 🧹 Nettoyage ancien conteneur...
                     docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
                     docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
-                    """
                     
-                    // Lancer le conteneur
-                    bat """
-                    echo Démarrage conteneur PR...
                     docker run -d -p ${env.HOST_PORT}:${env.DOCKER_PORT} --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}
-                    timeout /t 15 /nobreak
-                    """
+                    timeout /t 10 /nobreak
                     
-                    // Tests
-                    bat """
-                    echo 🧪 Test smoke...
-                    
-                    set TEST_PASSED=0
-                    
-                    for /l %%i in (1,1,3) do (
-                        if !TEST_PASSED! equ 0 (
-                            echo Tentative %%i/3...
-                            
-                            powershell -Command "
-                            try {
-                                \$response = Invoke-WebRequest -Uri 'http://localhost:${env.HOST_PORT}' -UseBasicParsing -TimeoutSec 10
-                                if (\$response.StatusCode -eq 200) {
-                                    Write-Host '✅ Smoke test réussi'
-                                    exit 0
-                                } else {
-                                    Write-Host '❌ Status: ' \$response.StatusCode
-                                    exit 1
-                                }
-                            } catch {
-                                Write-Host '❌ Erreur: ' \$_.Exception.Message
-                                exit 1
-                            }
-                            "
-                            
-                            if !errorlevel! equ 0 (
-                                set TEST_PASSED=1
-                                echo ✅ Test réussi
-                            ) else (
-                                if %%i lss 3 (
-                                    echo ⏳ Nouvelle tentative...
-                                    timeout /t 5 /nobreak
-                                )
-                            )
-                        )
-                    )
-                    
-                    if !TEST_PASSED! equ 0 (
-                        echo ❌ Smoke test échoué
+                    curl -f http://localhost:${env.HOST_PORT} && (
+                        echo Test racine PASS
+                    ) || (
+                        echo Test racine FAIL
                         docker logs ${env.CONTAINER_NAME}
                         exit 1
                     )
                     
-                    echo ✅ Smoke test terminé
+                    curl -f http://localhost:${env.HOST_PORT}/health && (
+                        echo Test santé PASS
+                    ) || (
+                        echo Test santé FAIL
+                        exit 1
+                    )
+                    
+                    echo Smoke test réussi
                     """
                 }
             }
         }
 
-        // ===== ÉTAPE 8: RAPPORT PR =====
         stage('PR Report') {
             steps {
-                script {
-                    echo "📊 Génération rapport PR"
-                    
-                    // Créer un rapport
-                    bat """
-                    echo "# Rapport PR #${env.PR_NUMBER}" > pr_report.md
-                    echo "" >> pr_report.md
-                    echo "## Résumé" >> pr_report.md
-                    echo "- **PR:** #${env.PR_NUMBER}" >> pr_report.md
-                    echo "- **Branche:** ${env.BRANCH_NAME}" >> pr_report.md
-                    echo "- **Statut:** ✅ PASSED" >> pr_report.md
-                    echo "- **Date:** %DATE% %TIME%" >> pr_report.md
-                    echo "" >> pr_report.md
-                    echo "## Tests" >> pr_report.md
-                    echo "- ✅ Build réussi" >> pr_report.md
-                    echo "- ✅ Tests unitaires" >> pr_report.md
-                    echo "- ✅ Smoke test" >> pr_report.md
-                    echo "- ✅ Docker build" >> pr_report.md
-                    echo "" >> pr_report.md
-                    echo "## Détails" >> pr_report.md
-                    echo "\`\`\`" >> pr_report.md
-                    docker images ${env.DOCKER_IMAGE} >> pr_report.md
-                    echo "\`\`\`" >> pr_report.md
-                    """
-                    
-                    // Archiver
-                    archiveArtifacts artifacts: 'pr_report.md, test_results.txt, audit_report.txt, pr_build_info.txt', fingerprint: true
-                }
+                bat """
+                echo "# Rapport PR" > pr_report.md
+                echo "PR: ${env.PR_NUMBER}" >> pr_report.md
+                echo "Branche: ${env.BRANCH_NAME}" >> pr_report.md
+                echo "Statut: PASS" >> pr_report.md
+                echo "Date: %DATE% %TIME%" >> pr_report.md
+                """
+                archiveArtifacts artifacts: 'pr_report.md', fingerprint: true
             }
         }
 
-        // ===== ÉTAPE 9: NETTOYAGE =====
         stage('Cleanup') {
             steps {
-                echo "🧹 Nettoyage"
                 bat """
                 docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
                 docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
-                docker rmi ${env.DOCKER_IMAGE} 2>nul || echo OK
                 """
             }
         }
@@ -264,39 +143,14 @@ pipeline {
     post {
         always {
             cleanWs()
-            echo "🧽 Workspace nettoyé"
         }
         
         success {
-            echo "✅ PR READY FOR MERGE"
-            script {
-                // Mettre à jour le statut GitHub
-                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                    bat """
-                    echo Mise à jour statut GitHub...
-                    curl -X POST -H "Authorization: token %GITHUB_TOKEN%" \\
-                         -H "Accept: application/vnd.github.v3+json" \\
-                         https://api.github.com/repos/votre-repo/projet-devops/statuses/${env.GIT_COMMIT} \\
-                         -d "{\\"state\\":\\"success\\",\\"description\\":\\"Build PR réussi\\",\\"context\\":\\"jenkins/pr-build\\"}"
-                    """
-                }
-            }
+            echo "PR READY FOR MERGE"
         }
         
         failure {
-            echo "❌ PR NEEDS FIXES"
-            script {
-                // Mettre à jour le statut GitHub
-                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                    bat """
-                    echo Mise à jour statut GitHub...
-                    curl -X POST -H "Authorization: token %GITHUB_TOKEN%" \\
-                         -H "Accept: application/vnd.github.v3+json" \\
-                         https://api.github.com/repos/votre-repo/projet-devops/statuses/${env.GIT_COMMIT} \\
-                         -d "{\\"state\\":\\"failure\\",\\"description\\":\\"Build PR échoué\\",\\"context\\":\\"jenkins/pr-build\\"}"
-                    """
-                }
-            }
+            echo "PR NEEDS FIXES"
         }
     }
 }
