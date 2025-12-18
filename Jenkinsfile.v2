@@ -1,16 +1,36 @@
 pipeline {
     agent any
 
-    // CORRECTION : utiliser "githubPullRequests" au lieu de "githubPullRequest"
+    // Syntaxe correcte pour githubPullRequests
     triggers {
         githubPullRequests(
-            events: ['opened', 'synchronize', 'reopened'],
-            labels: [],
-            branches: ['main', 'develop'],
-            adminList: '',
-            userWhitelist: '',
-            orgWhitelist: '',
-            cron: 'H/5 * * * *'
+            githubPlugin: [
+                $class: 'GitHubPullRequestTrigger',
+                spec: '''
+                    [
+                        {
+                            "branches": [
+                                {"name": "main"},
+                                {"name": "develop"}
+                            ],
+                            "events": [
+                                "opened",
+                                "synchronize",
+                                "reopened"
+                            ]
+                        }
+                    ]
+                ''',
+                adminList: '',
+                userRestriction: '',
+                orgRestriction: '',
+                preStatus: true,
+                cancelQueued: false,
+                allowMembersOfWhitelistedOrgsAsAdmin: false,
+                useGitHubHooks: true,
+                permitAll: false,
+                autoCloseFailedPullRequests: false
+            ]
         )
     }
 
@@ -58,8 +78,7 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 // Adaptez selon votre stack
-                sh 'npm install'   // pour Node.js
-                // ou sh 'mvn clean install' pour Java
+                sh 'npm install'
             }
         }
 
@@ -90,15 +109,6 @@ pipeline {
             steps {
                 script {
                     sh 'npm run build'
-                    // docker.build("${DOCKER_REGISTRY}/${APP_NAME}:pr-${PR_ID}")
-                }
-            }
-        }
-
-        stage('Security Scan') {
-            steps {
-                script {
-                    echo "Security scan placeholder"
                 }
             }
         }
@@ -107,9 +117,7 @@ pipeline {
     post {
         success {
             script {
-                // Notification simple pour éviter les erreurs si plugin email non configuré
                 echo "✅ PR #${PR_ID} build successful"
-                // Pour GitHub : githubNotify description: 'Build succeeded', status: 'SUCCESS', context: 'jenkins/pr-validation'
             }
         }
         failure {
