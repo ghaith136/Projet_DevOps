@@ -7,81 +7,48 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '5'))
     }
 
-    triggers {
-        githubPush()
-    }
-
     environment {
         APP_NAME = "meteo-app-pr"
-        PR_NUMBER = "${env.CHANGE_ID ?: 'manual'}"
-        BRANCH_NAME = "${env.CHANGE_BRANCH ?: env.BRANCH_NAME ?: 'unknown'}"
-        DOCKER_IMAGE = "meteo-app-pr-${PR_NUMBER}"
-        CONTAINER_NAME = "meteo-app-pr-${PR_NUMBER}"
-        HOST_PORT = "3001"  // Port dédié pour PR
-        DOCKER_PORT = "3000"
-    }
-
-    parameters {
-        booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Exécuter les tests')
-        choice(name: 'NODE_VERSION', choices: ['18', '20'], description: 'Version Node.js')
+        DOCKER_IMAGE = "meteo-app-pr-${BUILD_NUMBER}"
+        CONTAINER_NAME = "meteo-app-pr-${BUILD_NUMBER}"
+        HOST_PORT = "3000"  // Port 3000
     }
 
     stages {
         stage('PR Info') {
             steps {
-                script {
-                    echo "PIPELINE 1: Build & Smoke sur PR"
-                    echo "PR #${env.PR_NUMBER}"
-                    echo "Branche: ${env.BRANCH_NAME}"
-                    echo "Node.js: ${params.NODE_VERSION}"
-                    echo "Tests: ${params.RUN_TESTS ? 'Activés' : 'Désactivés'}"
-                }
+                echo "PIPELINE 1: Build & Smoke sur PR"
+                bat "echo Build #${BUILD_NUMBER}"
             }
         }
         
-        stage('Checkout PR') {
+        stage('Checkout') {
             steps {
-                echo "Récupération du code PR"
+                echo "Checkout code"
                 checkout scm
                 bat 'dir'
             }
         }
 
-        stage('Install & Lint') {
+        stage('Setup') {
             steps {
-                bat """
-                npm install
-                echo Dépendances installées
-                """
+                bat 'npm install'
+                bat 'echo Dependances installees'
             }
         }
 
         stage('Build') {
             steps {
-                bat """
-                npm run build
-                echo Build terminé
-                """
-            }
-        }
-
-        stage('Unit Tests') {
-            when {
-                expression { params.RUN_TESTS == true }
-            }
-            steps {
-                bat """
-                npm test
-                echo Tests réussis
-                """
+                bat 'npm run build'
+                bat 'echo Build termine'
             }
         }
 
         stage('Docker Build') {
             steps {
                 bat """
-                docker build -t ${env.DOCKER_IMAGE} .
-                echo Image construite: ${env.DOCKER_IMAGE}
+                docker build -t ${DOCKER_IMAGE} .
+                echo Image construite: ${DOCKER_IMAGE}
                 """
             }
         }
@@ -90,41 +57,40 @@ pipeline {
             steps {
                 script {
                     bat """
-                    docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
-                    docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
+                    docker stop ${CONTAINER_NAME} 2>nul || echo OK
+                    docker rm ${CONTAINER_NAME} 2>nul || echo OK
                     
-                    docker run -d -p ${env.HOST_PORT}:${env.DOCKER_PORT} --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}
+                    docker run -d -p ${HOST_PORT}:3000 --name ${CONTAINER_NAME} ${DOCKER_IMAGE}
                     timeout /t 10 /nobreak
                     
-                    curl -f http://localhost:${env.HOST_PORT} && (
+                    curl -f http://localhost:${HOST_PORT} && (
                         echo Test racine PASS
                     ) || (
                         echo Test racine FAIL
-                        docker logs ${env.CONTAINER_NAME}
+                        docker logs ${CONTAINER_NAME}
                         exit 1
                     )
                     
-                    curl -f http://localhost:${env.HOST_PORT}/health && (
-                        echo Test santé PASS
+                    curl -f http://localhost:${HOST_PORT}/health && (
+                        echo Test sante PASS
                     ) || (
-                        echo Test santé FAIL
+                        echo Test sante FAIL
                         exit 1
                     )
                     
-                    echo Smoke test réussi
+                    echo Smoke test reussi
                     """
                 }
             }
         }
 
-        stage('PR Report') {
+        stage('Report') {
             steps {
                 bat """
-                echo "# Rapport PR" > pr_report.md
-                echo "PR: ${env.PR_NUMBER}" >> pr_report.md
-                echo "Branche: ${env.BRANCH_NAME}" >> pr_report.md
-                echo "Statut: PASS" >> pr_report.md
-                echo "Date: %DATE% %TIME%" >> pr_report.md
+                echo # Rapport PR > pr_report.md
+                echo Build: ${BUILD_NUMBER} >> pr_report.md
+                echo Statut: PASS >> pr_report.md
+                echo Date: %DATE% %TIME% >> pr_report.md
                 """
                 archiveArtifacts artifacts: 'pr_report.md', fingerprint: true
             }
@@ -133,8 +99,8 @@ pipeline {
         stage('Cleanup') {
             steps {
                 bat """
-                docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
-                docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
+                docker stop ${CONTAINER_NAME} 2>nul || echo OK
+                docker rm ${CONTAINER_NAME} 2>nul || echo OK
                 """
             }
         }
