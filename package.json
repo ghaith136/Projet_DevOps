@@ -1,15 +1,15 @@
 {
-  "name": "devops-meteo",
+  "name": "meteo-app-devops",
   "version": "1.0.0",
-  "main": "server.js",
   "type": "module",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "build": "echo 'Build terminé'",
-    "test": "echo 'Tests OK'",
-    "dev": "node server.js"
+    "test": "echo 'Tests OK'"
   },
   "dependencies": {
     "express": "^4.18.2"
-  }
+  },
+  "devDependencies": {}
 }
