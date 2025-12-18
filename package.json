@@ -1,15 +1,15 @@
 {
-  "name": "devops",
+  "name": "devops-meteo",
   "version": "1.0.0",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "build": "echo Build OK",
-    "test": "echo Test OK"
+    "build": "echo 'Build terminé'",
+    "test": "echo 'Tests OK'",
+    "dev": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "node-fetch": "^3.3.2"
+    "express": "^4.18.2"
   }
 }
