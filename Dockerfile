@@ -2,7 +2,7 @@
 FROM node:18-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci
 COPY . .
 RUN npm run build
 
@@ -10,16 +10,13 @@ RUN npm run build
 FROM node:18-alpine
 WORKDIR /app
 
-# Copier package.json et node_modules
+# Copier seulement les fichiers nécessaires
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app ./
-
-# Créer un utilisateur non-root pour plus de sécurité
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nodejs -u 1001
-USER nodejs
+COPY --from=builder /app/server.js ./
+COPY --from=builder /app/package.json ./
 
 EXPOSE 3000
 
-CMD ["npm", "start"]
+# Important: Utiliser node directement au lieu de npm start
+CMD ["node", "server.js"]
