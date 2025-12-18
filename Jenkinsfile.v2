@@ -3,7 +3,7 @@ pipeline {
 
     // Déclencheur pour les Pull Requests (GitHub, GitLab, etc.)
     triggers {
-        githubPullRequest(
+        githubPullRequests(
             events: ['opened', 'synchronize', 'reopened'],
             labels: [],
             branches: ['main', 'develop'],
