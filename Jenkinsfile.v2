@@ -1,0 +1,154 @@
+pipeline {
+    agent any
+
+    // Déclencheur pour les Pull Requests (GitHub, GitLab, etc.)
+    triggers {
+        githubPullRequest(
+            events: ['opened', 'synchronize', 'reopened'],
+            labels: [],
+            branches: ['main', 'develop'],
+            adminList: '',
+            userWhitelist: '',
+            orgWhitelist: '',
+            cron: 'H/5 * * * *'
+        )
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        // Variables d'environnement
+        BRANCH_NAME = "${env.CHANGE_BRANCH}" // Branche de la PR
+        TARGET_BRANCH = "${env.CHANGE_TARGET}" // Branche cible
+        PR_ID = "${env.CHANGE_ID}"
+        DOCKER_REGISTRY = 'your-registry-url'
+        APP_NAME = 'my-app'
+    }
+
+    stages {
+        stage('Checkout & Setup') {
+            steps {
+                script {
+                    // Checkout du code de la PR
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "PR-${env.CHANGE_ID}"]],
+                        extensions: [
+                            [$class: 'PreBuildMerge', options: [mergeTarget: env.CHANGE_TARGET]],
+                            [$class: 'CleanCheckout'],
+                            [$class: 'CloneOption', depth: 1, noTags: false, reference: '', shallow: true]
+                        ],
+                        userRemoteConfigs: [[url: env.GIT_URL, credentialsId: 'git-credentials']]
+                    ])
+
+                    echo "Building PR #${PR_ID} from ${BRANCH_NAME} → ${TARGET_BRANCH}"
+                }
+            }
+        }
+
+        stage('Validate PR') {
+            steps {
+                script {
+                    // Vérifications de base (optionnel)
+                    sh 'git log --oneline -5'
+                    sh 'echo "PR validation started"'
+                }
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                // Adaptez selon votre stack
+                sh 'npm install'   // pour Node.js
+                // ou sh 'mvn clean install' pour Java
+                // ou sh 'pip install -r requirements.txt' pour Python
+            }
+        }
+
+        stage('Run Tests') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        sh 'npm test'  // exemple
+                        // ou sh 'mvn test'
+                    }
+                    post {
+                        always {
+                            junit '**/test-results.xml' // publication des résultats
+                        }
+                    }
+                }
+                stage('Linting') {
+                    steps {
+                        sh 'npm run lint'  // exemple
+                        // ou sh 'pylint **/*.py'
+                    }
+                }
+            }
+        }
+
+        stage('Build & Package') {
+            when {
+                expression { env.CHANGE_TARGET == 'main' || env.CHANGE_TARGET == 'develop' }
+            }
+            steps {
+                script {
+                    // Build et création d'artefact
+                    sh 'npm run build'  // exemple
+                    // ou sh 'mvn package'
+
+                    // Optionnel : construire une image Docker
+                    docker.build("${DOCKER_REGISTRY}/${APP_NAME}:pr-${PR_ID}")
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            steps {
+                script {
+                    // Exemple avec OWASP ZAP ou Snyk
+                    echo "Security scan placeholder"
+                    // sh 'snyk test'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                // Notification de succès
+                emailext(
+                    subject: "✅ PR #${PR_ID} build successful",
+                    body: "La PR #${PR_ID} de ${BRANCH_NAME} vers ${TARGET_BRANCH} a passé tous les tests.\n\n${env.BUILD_URL}",
+                    to: env.GIT_AUTHOR_EMAIL
+                )
+                // Commentaire sur la PR (si intégration GitHub/GitLab)
+                githubNotify description: 'Build succeeded', status: 'SUCCESS', context: 'jenkins/pr-validation'
+            }
+        }
+        failure {
+            script {
+                // Notification d'échec
+                emailext(
+                    subject: "❌ PR #${PR_ID} build failed",
+                    body: "La PR #${PR_ID} a échoué. Veuillez vérifier les erreurs.\n\n${env.BUILD_URL}",
+                    to: env.GIT_AUTHOR_EMAIL
+                )
+                githubNotify description: 'Build failed', status: 'FAILURE', context: 'jenkins/pr-validation'
+            }
+        }
+        unstable {
+            echo "Build unstable (tests échoués)"
+        }
+        cleanup {
+            // Nettoyage
+            sh 'docker system prune -f || true'
+            cleanWs()
+        }
+    }
+}
