@@ -4,7 +4,7 @@ pipeline {
     options {
         disableConcurrentBuilds()
         timestamps()
-        buildDiscarder(logRotator(numToKeepStr: '20'))
+        buildDiscarder(logRotator(numToKeepStr: '18'))
     }
 
     environment {
