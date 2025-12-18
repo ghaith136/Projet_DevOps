@@ -1,22 +1,20 @@
 #!/bin/bash
+echo "🧪 Smoke test..."
 
-echo "Running Smoke Test..."
-
-# test route /
-if curl -s localhost:3000 | grep "API OK" > /dev/null; then
-  echo "Root endpoint OK"
+# Test endpoint racine
+if curl -s http://localhost:3000 | grep -q "API Météo"; then
+  echo "✅ / : PASS"
 else
-  echo "Root endpoint FAILED"
+  echo "❌ / : FAIL"
   exit 1
 fi
 
-# test weather API
-if curl -s localhost:3000/weather | grep "temperature" > /dev/null; then
-  echo "Weather endpoint OK"
+# Test santé
+if curl -s http://localhost:3000/health | grep -q "healthy"; then
+  echo "✅ /health : PASS"
 else
-  echo "Weather endpoint FAILED"
+  echo "❌ /health : FAIL"
   exit 1
 fi
 
-echo "Smoke test passed"
-exit 0
+echo "✅ Smoke test réussi"
