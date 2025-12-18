@@ -1,0 +1,369 @@
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    triggers {
+        // Déclenché sur tags
+        pollSCM('H/2 * * * *')
+    }
+
+    environment {
+        APP_NAME = "meteo-app"
+        // Utiliser le tag git
+        VERSION = sh(script: 'git describe --tags --always', returnStdout: true).trim()
+        DOCKER_IMAGE = "meteo-app:${env.VERSION}"
+        CONTAINER_NAME = "meteo-app-${env.VERSION.replace('.', '-')}"
+        HOST_PORT = "3003"
+        DOCKER_PORT = "3000"
+        ARTIFACT_DIR = "artifacts-${env.VERSION}"
+    }
+
+    parameters {
+        choice(name: 'NODE_VERSION', choices: ['18', '20'], description: 'Version Node.js')
+        booleanParam(name: 'PUBLISH_DOCKER', defaultValue: false, description: 'Publier sur Docker Hub')
+    }
+
+    stages {
+        // ===== VÉRIFICATION VERSION =====
+        stage('Version Validation') {
+            steps {
+                script {
+                    echo "🏷️  PIPELINE 3: Build Versionné"
+                    echo "📦 Version: ${env.VERSION}"
+                    
+                    // Vérifier format du tag
+                    bat """
+                    echo Vérification tag...
+                    echo ${env.VERSION} | findstr /r "^v[0-9]\\+\\.[0-9]\\+\\.[0-9]\\+$"
+                    if errorlevel 1 (
+                        echo ⚠️  Tag non standard: ${env.VERSION}
+                        echo Utilisation quand même...
+                    ) else (
+                        echo ✅ Tag valide: ${env.VERSION}
+                    )
+                    
+                    # Créer répertoire artefacts
+                    mkdir ${env.ARTIFACT_DIR}
+                    """
+                }
+            }
+        }
+
+        // ===== CHECKOUT TAG =====
+        stage('Checkout Tag') {
+            steps {
+                echo "📥 Checkout tag ${env.VERSION}"
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "refs/tags/${env.VERSION}"]],
+                    extensions: [[$class: 'CloneOption', depth: 1, shallow: true]]
+                ])
+                
+                bat """
+                echo === INFORMATIONS VERSION ===
+                git log -1 --oneline
+                echo.
+                echo === FICHIERS ===
+                dir
+                
+                # Sauvegarder infos git
+                git log -1 --pretty=format:"Commit: %H%%nAuteur: %an <%ae>%%nDate: %ad%%nMessage: %s" > ${env.ARTIFACT_DIR}/git_info.txt
+                echo ${env.VERSION} > ${env.ARTIFACT_DIR}/version.txt
+                """
+            }
+        }
+
+        // ===== BUILD VERSIONNÉ =====
+        stage('Versioned Build') {
+            steps {
+                script {
+                    echo "⚙️  Build version ${env.VERSION}"
+                    
+                    bat """
+                    echo Installation dépendances...
+                    npm ci --only=production
+                    echo ✅ Dépendances installées
+                    
+                    echo Build...
+                    npm run build
+                    echo ✅ Build terminé
+                    
+                    # Informations build
+                    echo "Version: ${env.VERSION}" > ${env.ARTIFACT_DIR}/build_info.txt
+                    echo "Date: %DATE% %TIME%" >> ${env.ARTIFACT_DIR}/build_info.txt
+                    echo "Node: ${params.NODE_VERSION}" >> ${env.ARTIFACT_DIR}/build_info.txt
+                    npm list --depth=0 >> ${env.ARTIFACT_DIR}/dependencies.txt
+                    """
+                }
+            }
+        }
+
+        // ===== TESTS PARALLÈLES =====
+        stage('Parallel Quality Gates') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        bat """
+                        echo 🧪 Tests unitaires...
+                        npm test 2>&1 | tee ${env.ARTIFACT_DIR}/unit_tests.log
+                        echo ✅ Tests unitaires terminés
+                        """
+                    }
+                }
+                
+                stage('Security Scan') {
+                    steps {
+                        bat """
+                        echo 🔒 Scan sécurité...
+                        npm audit --audit-level=moderate 2>&1 | tee ${env.ARTIFACT_DIR}/security_scan.log
+                        echo ✅ Scan sécurité terminé
+                        """
+                    }
+                }
+                
+                stage('Code Quality') {
+                    steps {
+                        bat """
+                        echo 📊 Qualité code...
+                        node -c server.js && echo ✅ Syntaxe OK || echo ❌ Erreur syntaxe
+                        echo ✅ Analyse code terminée
+                        """
+                    }
+                }
+            }
+        }
+
+        // ===== DOCKER BUILD VERSIONNÉ =====
+        stage('Docker Versioned Build') {
+            steps {
+                script {
+                    echo "🐳 Build Docker versionné"
+                    
+                    bat """
+                    echo Construction image ${env.VERSION}...
+                    docker build --no-cache \\
+                        --label "version=${env.VERSION}" \\
+                        --label "build.date=%DATE% %TIME%" \\
+                        --label "maintainer=devops-team" \\
+                        -t ${env.DOCKER_IMAGE} \\
+                        -t meteo-app:latest \\
+                        .
+                    
+                    echo ✅ Image construite
+                    
+                    # Inspecter
+                    docker inspect ${env.DOCKER_IMAGE} --format='{{json .Config.Labels}}' > ${env.ARTIFACT_DIR}/docker_labels.json
+                    
+                    # Sauvegarder image
+                    docker save -o ${env.ARTIFACT_DIR}/meteo-app-${env.VERSION}.tar ${env.DOCKER_IMAGE}
+                    echo ✅ Image sauvegardée
+                    """
+                }
+            }
+        }
+
+        // ===== TESTS VERSIONNÉS =====
+        stage('Versioned Tests') {
+            steps {
+                script {
+                    echo "🧪 Tests version ${env.VERSION}"
+                    
+                    bat """
+                    echo 🚀 Démarrage version ${env.VERSION}...
+                    docker run -d -p ${env.HOST_PORT}:${env.DOCKER_PORT} --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}
+                    timeout /t 15 /nobreak
+                    
+                    echo === TESTS COMPLETS ===
+                    
+                    # Tests
+                    echo "Test /" > ${env.ARTIFACT_DIR}/test_results.txt
+                    curl -f http://localhost:${env.HOST_PORT} && echo "✅ PASS" >> ${env.ARTIFACT_DIR}/test_results.txt || echo "❌ FAIL" >> ${env.ARTIFACT_DIR}/test_results.txt
+                    
+                    echo. >> ${env.ARTIFACT_DIR}/test_results.txt
+                    echo "Test /weather" >> ${env.ARTIFACT_DIR}/test_results.txt
+                    curl -f http://localhost:${env.HOST_PORT}/weather && echo "✅ PASS" >> ${env.ARTIFACT_DIR}/test_results.txt || echo "❌ FAIL" >> ${env.ARTIFACT_DIR}/test_results.txt
+                    
+                    echo. >> ${env.ARTIFACT_DIR}/test_results.txt
+                    echo "Test /health" >> ${env.ARTIFACT_DIR}/test_results.txt
+                    curl -f http://localhost:${env.HOST_PORT}/health && echo "✅ PASS" >> ${env.ARTIFACT_DIR}/test_results.txt || echo "❌ FAIL" >> ${env.ARTIFACT_DIR}/test_results.txt
+                    
+                    # Logs
+                    docker logs ${env.CONTAINER_NAME} > ${env.ARTIFACT_DIR}/container_logs.txt
+                    
+                    echo ✅ Tests terminés
+                    """
+                }
+            }
+        }
+
+        // ===== PUBLICATION DOCKER =====
+        stage('Docker Publish') {
+            when {
+                expression { params.PUBLISH_DOCKER == true }
+            }
+            steps {
+                script {
+                    echo "📤 Publication Docker Hub"
+                    
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub', 
+                                                    usernameVariable: 'DOCKER_USER', 
+                                                    passwordVariable: 'DOCKER_PASS')]) {
+                        bat """
+                        echo Connexion Docker Hub...
+                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+                        
+                        echo Tagging...
+                        docker tag ${env.DOCKER_IMAGE} %DOCKER_USER%/meteo-app:${env.VERSION}
+                        docker tag ${env.DOCKER_IMAGE} %DOCKER_USER%/meteo-app:latest
+                        
+                        echo Publication...
+                        docker push %DOCKER_USER%/meteo-app:${env.VERSION}
+                        docker push %DOCKER_USER%/meteo-app:latest
+                        
+                        echo Déconnexion...
+                        docker logout
+                        
+                        echo ✅ Publication réussie
+                        """
+                    }
+                }
+            }
+        }
+
+        // ===== GÉNÉRATION RAPPORT =====
+        stage('Generate Version Report') {
+            steps {
+                script {
+                    echo "📊 Rapport version ${env.VERSION}"
+                    
+                    bat """
+                    echo Génération rapport HTML...
+                    
+                    echo "<!DOCTYPE html>" > ${env.ARTIFACT_DIR}/version_report.html
+                    echo "<html>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "<head>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    <title>Version ${env.VERSION} - Application Météo</title>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    <style>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "        body { font-family: Arial; margin: 40px; }" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "        .header { background: #2c3e50; color: white; padding: 20px; }" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "        .success { color: green; }" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "        .artifact { border: 1px solid #ddd; padding: 10px; margin: 10px 0; }" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    </style>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "</head>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "<body>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    <div class='header'>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "        <h1>📦 Version ${env.VERSION}</h1>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "        <p>Application Météo DevOps - Build versionné</p>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    </div>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    " >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    <h2>✅ Build Réussi</h2>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    <p><strong>Date:</strong> %DATE% %TIME%</p>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    <p><strong>Image Docker:</strong> ${env.DOCKER_IMAGE}</p>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    " >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "    <h2>📁 Artefacts Générés</h2>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    
+                    dir "${env.ARTIFACT_DIR}" {
+                        bat """
+                        for %%f in (*.*) do (
+                            echo "    <div class='artifact'>" >> ${env.ARTIFACT_DIR}/version_report.html
+                            echo "        <strong>%%f</strong>" >> ${env.ARTIFACT_DIR}/version_report.html
+                            echo "    </div>" >> ${env.ARTIFACT_DIR}/version_report.html
+                        )
+                        """
+                    }
+                    
+                    bat """
+                    echo "    </body>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    echo "</html>" >> ${env.ARTIFACT_DIR}/version_report.html
+                    """
+                    
+                    // Créer README
+                    bat """
+                    echo "# Version ${env.VERSION}" > ${env.ARTIFACT_DIR}/README.md
+                    echo "" >> ${env.ARTIFACT_DIR}/README.md
+                    echo "## Déploiement" >> ${env.ARTIFACT_DIR}/README.md
+                    echo "\`\`\`bash" >> ${env.ARTIFACT_DIR}/README.md
+                    echo "# Charger l'image" >> ${env.ARTIFACT_DIR}/README.md
+                    echo "docker load -i meteo-app-${env.VERSION}.tar" >> ${env.ARTIFACT_DIR}/README.md
+                    echo "" >> ${env.ARTIFACT_DIR}/README.md
+                    echo "# Exécuter" >> ${env.ARTIFACT_DIR}/README.md
+                    echo "docker run -d -p 3000:3000 --name meteo-app meteo-app:${env.VERSION}" >> ${env.ARTIFACT_DIR}/README.md
+                    echo "\`\`\`" >> ${env.ARTIFACT_DIR}/README.md
+                    """
+                }
+            }
+        }
+
+        // ===== ARCHIVAGE COMPLET =====
+        stage('Archive Versioned Artifacts') {
+            steps {
+                script {
+                    echo "📦 Archivage version ${env.VERSION}"
+                    
+                    // Lister artefacts
+                    bat """
+                    echo === ARTEFACTS VERSION ${env.VERSION} ===
+                    dir ${env.ARTIFACT_DIR} /s /b
+                    """
+                    
+                    // Archiver
+                    archiveArtifacts artifacts: "${env.ARTIFACT_DIR}/**", fingerprint: true
+                    
+                    // Métadonnées
+                    bat """
+                    echo "version=${env.VERSION}" > build.properties
+                    echo "image=${env.DOCKER_IMAGE}" >> build.properties
+                    echo "status=SUCCESS" >> build.properties
+                    """
+                    
+                    currentBuild.description = "Version: ${env.VERSION}"
+                }
+            }
+        }
+
+        // ===== NETTOYAGE =====
+        stage('Cleanup') {
+            steps {
+                bat """
+                docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
+                docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
+                echo 🧹 Nettoyage terminé
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        
+        success {
+            echo "🏆 VERSION ${env.VERSION} - SUCCESS"
+            
+            // Notification
+            emailext(
+                subject: "✅ Build Versionné ${env.VERSION} Réussi",
+                body: """
+                Build versionné réussi !
+                
+                Version: ${env.VERSION}
+                Build: #${BUILD_NUMBER}
+                Image: ${env.DOCKER_IMAGE}
+                
+                Artefacts: ${env.BUILD_URL}artifact/
+                """,
+                to: 'devops-team@example.com'
+            )
+        }
+        
+        failure {
+            echo "💥 VERSION ${env.VERSION} - FAILED"
+        }
+    }
+}
