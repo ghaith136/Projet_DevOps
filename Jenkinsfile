@@ -4,19 +4,25 @@ pipeline {
     environment {
         DOCKER_IMAGE = "monapp-${BUILD_NUMBER}"
         CONTAINER_NAME = "monapp-${BUILD_NUMBER}"
+        // PORT EXTERNE (votre machine) : 3002
+        // PORT INTERNE (docker) : 3000
+        EXTERNAL_PORT = "3002"
+        INTERNAL_PORT = "3000"
     }
 
     stages {
         stage('Start') {
             steps {
-                bat 'echo "=== DEBUT PIPELINE 2 ==="'
+                bat 'echo "=== PIPELINE 2 - DOCKER PORT MAPPING ==="'
+                bat 'echo "Docker interne: localhost:3000"'
+                bat 'echo "Externe/Jenkins: localhost:3002"'
             }
         }
         
         stage('Checkout') {
             steps {
                 checkout scm
-                bat 'echo "Checkout termine"'
+                bat 'echo "Code recupere"'
             }
         }
 
@@ -37,43 +43,53 @@ pipeline {
         stage('Docker Build & Run') {
             steps {
                 script {
-                    // Nettoyage AGGRESSIF
+                    // 1. NETTOYAGE
                     bat """
-                    echo "Nettoyage des conteneurs existants..."
-                    docker stop ${env.CONTAINER_NAME} 2>nul || echo "OK - aucun conteneur"
-                    docker rm ${env.CONTAINER_NAME} 2>nul || echo "OK - aucun conteneur"
+                    echo "Arret des anciens conteneurs..."
+                    docker stop ${env.CONTAINER_NAME} 2>nul || echo "OK"
+                    docker rm ${env.CONTAINER_NAME} 2>nul || echo "OK"
                     
-                    // VERIFIER LES PORTS
-                    echo "Verification des ports..."
-                    netstat -ano | findstr :3002
+                    // Liberer le port 3002 si utilise
+                    netstat -ano | findstr :${env.EXTERNAL_PORT}
                     if errorlevel 1 (
-                        echo "Port 3002 libre"
+                        echo "Port ${env.EXTERNAL_PORT} libre"
                     ) else (
-                        echo "ATTENTION: Port 3002 deja utilise"
-                        taskkill /F /PID $(netstat -ano | findstr :3002 | awk '{print \$5}') 2>nul || echo "Impossible de liberer le port"
+                        echo "Port ${env.EXTERNAL_PORT} deja utilise - nettoyage..."
+                        for /f "tokens=5" %%a in ('netstat -ano ^| findstr :${env.EXTERNAL_PORT}') do (
+                            taskkill /F /PID %%a 2>nul || echo "Processus termine"
+                        )
                     )
                     """
                     
+                    // 2. BUILD ET RUN EN PARALLELE
                     parallel(
                         'Build Docker': {
-                            bat "docker build -t ${env.DOCKER_IMAGE} ."
-                            bat 'echo "Image Docker construite"'
+                            bat 'echo "Construction image Docker..."'
+                            bat "docker build --no-cache -t ${env.DOCKER_IMAGE} ."
+                            bat 'echo "✅ Image Docker prete"'
                         },
                         'Run Docker': {
                             script {
-                                sleep 5  // Attendre que le build commence
-                                bat "docker run -d -p 3002:3000 --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}"
-                                
-                                // Attendre et verifier que le conteneur tourne
-                                sleep 20
+                                sleep 3
                                 bat """
+                                echo "Lancement conteneur..."
+                                echo "Mapping: ${env.EXTERNAL_PORT}:${env.INTERNAL_PORT}"
+                                docker run -d -p ${env.EXTERNAL_PORT}:${env.INTERNAL_PORT} --name ${env.CONTAINER_NAME} ${env.DOCKER_IMAGE}
+                                """
+                                
+                                // Attendre que l'app démarre DANS Docker
+                                sleep 25
+                                
+                                // Verifier le conteneur
+                                bat """
+                                echo "Verification conteneur..."
                                 docker ps | findstr ${env.CONTAINER_NAME}
                                 if errorlevel 1 (
-                                    echo "ERREUR: Conteneur non demarre"
-                                    docker logs ${env.CONTAINER_NAME} 2>nul || echo "Pas de logs disponibles"
+                                    echo "❌ Conteneur non demarre"
+                                    docker logs ${env.CONTAINER_NAME}
                                     exit 1
                                 )
-                                echo "Conteneur lance avec succes sur port 3002"
+                                echo "✅ Conteneur actif"
                                 """
                             }
                         }
@@ -85,68 +101,47 @@ pipeline {
         stage('Smoke Test') {
             steps {
                 script {
-                    echo "=== TEST DE L'APPLICATION ==="
+                    echo "=== TEST CONNEXION DOCKER ==="
                     
-                    // TEST 1: Verifier que le conteneur tourne
+                    // ESSAYER PLUSIEURS METHODES
                     bat """
-                    echo "Verification du conteneur Docker..."
-                    docker ps | findstr ${env.CONTAINER_NAME}
-                    if errorlevel 1 (
-                        echo "ERREUR: Conteneur ne tourne pas"
-                        exit 1
+                    echo "Methode 1: curl sur port ${env.EXTERNAL_PORT}"
+                    curl -f http://localhost:${env.EXTERNAL_PORT} && echo "✅ curl reussi" || (
+                        echo "❌ curl echoue, tentative Powershell..."
+                        
+                        powershell -Command "
+                        try {
+                            Write-Host 'Test Powershell sur localhost:${env.EXTERNAL_PORT}...'
+                            \$response = Invoke-WebRequest -Uri 'http://localhost:${env.EXTERNAL_PORT}' -UseBasicParsing -TimeoutSec 20
+                            Write-Host \"✅ Status: \$(\$response.StatusCode)\"
+                            Write-Host \"Contenu: \$(\$response.Content.Substring(0, [Math]::Min(100, \$response.Content.Length)))\"
+                            exit 0
+                        } catch {
+                            Write-Host \"❌ Erreur: \$(\$_.Exception.Message)\"
+                            
+                            // Debug: tester depuis l'INTERIEUR du conteneur
+                            Write-Host '=== TEST INTERNE DOCKER ==='
+                            \$internalTest = docker exec ${env.CONTAINER_NAME} sh -c 'curl -s http://localhost:${env.INTERNAL_PORT} || wget -qO- http://localhost:${env.INTERNAL_PORT} || echo \"Echec interne\"'
+                            Write-Host \"Test interne conteneur: \$internalTest\"
+                            
+                            exit 1
+                        }
+                        "
+                        
+                        if errorlevel 1 (
+                            echo "❌ Toutes les methodes echouent"
+                            
+                            // Dernier recours: verifier l'app dans Docker
+                            echo "=== VERIFICATION INTERNE ==="
+                            docker exec ${env.CONTAINER_NAME} ps aux || echo "Impossible d'executer dans conteneur"
+                            docker logs ${env.CONTAINER_NAME} --tail 30
+                            
+                            exit 1
+                        )
                     )
                     """
                     
-                    // TEST 2: Tester la connexion HTTP sur le BON PORT (3002)
-                    bat """
-                    echo "Test de connexion sur localhost:3002..."
-                    powershell -Command "
-                    \$retryCount = 0
-                    \$maxRetries = 5
-                    \$success = \$false
-                    
-                    while (\$retryCount -lt \$maxRetries -and !\$success) {
-                        try {
-                            Write-Host \"Tentative \$(\$retryCount + 1)/\$maxRetries...\"
-                            \$response = Invoke-WebRequest -Uri 'http://localhost:3002' -UseBasicParsing -TimeoutSec 10
-                            
-                            if (\$response.StatusCode -eq 200) {
-                                Write-Host '✅ SUCCES: Status 200'
-                                Write-Host 'Contenu: ' \$response.Content
-                                \$success = \$true
-                                break
-                            } else {
-                                Write-Host \"❌ Echec: Status \$(\$response.StatusCode)\"
-                            }
-                        } catch {
-                            Write-Host \"❌ Echec: \$(\$_.Exception.Message)\"
-                        }
-                        
-                        \$retryCount++
-                        if (\$retryCount -lt \$maxRetries) {
-                            Write-Host \"Attente 5 secondes avant nouvelle tentative...\"
-                            Start-Sleep -Seconds 5
-                        }
-                    }
-                    
-                    if (!\$success) {
-                        Write-Host \"❌ TOUTES LES TENTATIVES ONT ECHOUE\"
-                        
-                        // Debug: afficher les logs Docker
-                        Write-Host \"=== LOGS DOCKER ===\"
-                        \$logs = docker logs ${env.CONTAINER_NAME} 2>&1
-                        Write-Host \$logs
-                        
-                        // Debug: verifier les ports
-                        Write-Host \"=== PORTS OUVERTS ===\"
-                        netstat -ano | findstr :3002
-                        
-                        exit 1
-                    }
-                    "
-                    """
-                    
-                    bat 'echo "✅ Smoke Test reussi"'
+                    bat 'echo "✅ Smoke Test reussi sur port ${env.EXTERNAL_PORT}"'
                 }
             }
         }
@@ -154,20 +149,16 @@ pipeline {
         stage('Archive Artifacts') {
             steps {
                 script {
-                    // Creation des artefacts
                     bat """
-                    echo "Pipeline 2 - Build #${BUILD_NUMBER}" > build_info.txt
-                    echo "Date: %DATE% %TIME%" >> build_info.txt
-                    echo "Status: SUCCESS" >> build_info.txt
-                    echo "Port utilise: 3002" >> build_info.txt
+                    echo "Build: ${BUILD_NUMBER}" > build_report.txt
+                    echo "Port mapping: ${env.EXTERNAL_PORT} -> ${env.INTERNAL_PORT}" >> build_report.txt
+                    echo "Date: %DATE% %TIME%" >> build_report.txt
                     
-                    // Sauvegarder les logs Docker
-                    docker logs ${env.CONTAINER_NAME} 2>nul > docker_logs.txt || echo "Pas de logs disponibles" > docker_logs.txt
+                    docker logs ${env.CONTAINER_NAME} 2>nul > docker_output.txt || echo "Pas de logs" > docker_output.txt
                     """
                     
-                    // Archivage
-                    archiveArtifacts artifacts: 'build_info.txt, docker_logs.txt, package.json, Dockerfile, server.js', allowEmptyArchive: true
-                    bat 'echo "✅ Artefacts archives"'
+                    archiveArtifacts artifacts: 'build_report.txt, docker_output.txt', allowEmptyArchive: true
+                    bat 'echo "Artefacts archives"'
                 }
             }
         }
@@ -175,17 +166,16 @@ pipeline {
         stage('Cleanup') {
             steps {
                 bat """
-                echo "Nettoyage en cours..."
-                docker stop ${env.CONTAINER_NAME} 2>nul || echo "Conteneur deja arrete"
-                docker rm ${env.CONTAINER_NAME} 2>nul || echo "Conteneur deja supprime"
+                docker stop ${env.CONTAINER_NAME} 2>nul || echo OK
+                docker rm ${env.CONTAINER_NAME} 2>nul || echo OK
                 """
-                bat 'echo "✅ Nettoyage termine"'
+                bat 'echo "Nettoyage termine"'
             }
         }
         
         stage('End') {
             steps {
-                bat 'echo "=== FIN PIPELINE 2 ==="'
+                bat 'echo "=== FIN PIPELINE ==="'
             }
         }
     }
@@ -193,44 +183,27 @@ pipeline {
     post {
         always {
             cleanWs()
-            bat 'echo "Workspace nettoye"'
         }
         
         success {
             script {
-                bat 'echo "🎉 PIPELINE 2 - REUSSITE COMPLETE"'
-                
-                // Tests paralleles Node
                 parallel(
-                    'Runtime Node 18': {
+                    'Node 18 Runtime': {
                         bat 'node --version'
-                        bat 'echo "✅ Tests Node 18 termines"'
+                        bat 'echo "Node 18 OK"'
                     },
-                    'Runtime Node 20': {
+                    'Node 20 Runtime': {
                         bat 'echo "Node 20 simulation"'
-                        bat 'echo "✅ Tests Node 20 termines"'
+                        bat 'echo "Node 20 OK"'
                     }
                 )
+                bat 'echo "✅ PIPELINE 2 SUCCESS avec parallelisation"'
             }
         }
         
         failure {
-            bat 'echo "❌ PIPELINE 2 - ECHEC"'
-            
-            script {
-                // Debug avance en cas d'echec
-                bat """
-                echo "=== DEBUG INFOS ==="
-                echo "Conteneurs Docker:"
-                docker ps -a
-                echo ""
-                echo "Images Docker:"
-                docker images
-                echo ""
-                echo "Ports 3000-3005:"
-                netstat -ano | findstr :3000 :3001 :3002 :3003 :3004 :3005
-                """
-            }
+            bat 'echo "❌ PIPELINE 2 FAILED"'
+            bat "docker inspect ${env.CONTAINER_NAME} 2>nul || echo 'Conteneur inexistant'"
         }
     }
 }
